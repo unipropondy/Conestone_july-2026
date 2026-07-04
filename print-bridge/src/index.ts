@@ -1,10 +1,11 @@
-import { app as electronApp } from 'electron';
+﻿import { app as electronApp } from 'electron';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import * as path from 'path';
+import * as fs from 'fs';
 import { config } from './config';
 import { startPoller, pollerStats } from './poller';
-import { sendToPrinter } from './printer';
+import { sendToPrinter, checkPrinterReachable } from './printer';
 import { logger } from './logger';
 import {
   startMonitorWatcher,
@@ -40,6 +41,10 @@ app.use(cors({
 // Handle preflight OPTIONS requests globally before routes
 app.options('*', cors());
 
+// Serve Settings UI static assets (CSS, JS) from src/public (dev) or dist/public (prod)
+const publicPath = path.join(__dirname, 'public');
+app.use(express.static(publicPath));
+
 // Request single-instance lock
 const gotTheLock = electronApp.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -52,6 +57,124 @@ if (!gotTheLock) {
 app.get('/health', (req: Request, res: Response) => {
   res.json(pollerStats.getHealth());
 });
+
+// 1.1 GET /api/config - Retrieve current print bridge configuration
+app.get('/api/config', (req: Request, res: Response) => {
+  res.json(config);
+});
+
+// 1.2 POST /api/config - Save configuration to config.json
+app.post('/api/config', (req: Request, res: Response) => {
+  const { saveConfig } = require('./config');
+  const success = saveConfig(req.body);
+  if (success) {
+    res.json({ success: true, message: 'Configuration saved successfully' });
+  } else {
+    res.status(500).json({ success: false, error: 'Failed to write configuration file' });
+  }
+});
+
+// 1.3 GET /settings - Serve the production Settings Dashboard
+app.get('/settings', (req: Request, res: Response) => {
+  const htmlPath = path.join(__dirname, 'public', 'settings.html');
+  if (fs.existsSync(htmlPath)) {
+    res.sendFile(htmlPath);
+  } else {
+    res.status(503).send('<h1>Settings UI not found. Run npm run build first.</h1>');
+  }
+});
+
+// 1.4 GET /api/status - Rich runtime status for the Settings Dashboard
+app.get('/api/status', (req: Request, res: Response) => {
+  let appVersion = '1.0.0';
+  let electronVersion = process.versions.electron || 'N/A';
+  const nodeVersion   = process.version;
+
+  try {
+    const pkgPath = path.join(electronApp.getAppPath(), 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      appVersion = pkg.version || '1.0.0';
+    }
+  } catch (_) {}
+
+  let configPath = 'N/A';
+  try {
+    // Resolve the same config file path logic as config.ts
+    const execDir        = path.dirname(process.execPath);
+    const execConfigPath = path.join(execDir, 'config.json');
+    const localConfig    = path.join(process.cwd(), 'config.json');
+    if (fs.existsSync(execConfigPath))  configPath = execConfigPath;
+    else if (fs.existsSync(localConfig)) configPath = localConfig;
+  } catch (_) {}
+
+  let configLastSaved: string | null = null;
+  try {
+    if (configPath !== 'N/A') {
+      const stat = fs.statSync(configPath);
+      configLastSaved = stat.mtime.toISOString();
+    }
+  } catch (_) {}
+
+  const health = pollerStats.getHealth();
+
+  res.json({
+    bridgeRunning:             true,
+    printerConnected:          health.connected,
+    customerDisplayConnected:  false, // updated by customer display manager if needed
+    appVersion,
+    electronVersion,
+    nodeVersion,
+    configPath,
+    configLastSaved,
+    printer: {
+      ip:        config.backends?.[0]?.url || 'N/A',
+      port:      9100,
+      status:    health.connected ? 'Connected' : 'Disconnected',
+      usbStatus: 'Not configured',
+    },
+    kitchenRoutes:  'Via Railway backend',
+    cashierPrinter: 'Receipt Printer (TCP)',
+  });
+});
+
+// 1.5 GET /api/logs - Return latest 100 log lines
+app.get('/api/logs', (req: Request, res: Response) => {
+  try {
+    let userDataPath = '';
+    try { userDataPath = electronApp.getPath('userData'); } catch (_) {}
+    if (!userDataPath) {
+      userDataPath = process.env.APPDATA
+        ? path.join(process.env.APPDATA, 'UniPro Print Bridge')
+        : process.cwd();
+    }
+    const logFile = path.join(userDataPath, 'logs', 'app.log');
+    if (!fs.existsSync(logFile)) {
+      return res.json({ lines: [] });
+    }
+    const content = fs.readFileSync(logFile, 'utf8');
+    const lines   = content.split('\n').filter(Boolean).slice(-100);
+    res.json({ lines });
+  } catch (err: any) {
+    res.json({ lines: [`[ERROR] Could not read log file: ${err.message}`] });
+  }
+});
+
+// 1.6 POST /api/printer/reconnect - Signal a printer reconnection attempt
+app.post('/api/printer/reconnect', async (req: Request, res: Response) => {
+  logger.info('[Settings] Manual printer reconnect requested via dashboard.');
+  // The poller will naturally re-authenticate on the next cycle.
+  // We reset connection flags on all backend instances.
+  const { getBackendInstances } = require('./railwayApi');
+  const instances = getBackendInstances();
+  for (const inst of instances) {
+    inst.authenticated = false;
+    inst.connected     = false;
+  }
+  res.json({ success: true, message: 'Reconnect signal sent â€” backends will re-authenticate on next poll cycle.' });
+});
+
+// â”€â”€â”€ Settings UI now served via static file (src/public/settings.html) â”€â”€â”€
 
 // 2. POST /test-print - Directly test a kitchen printer from the bridge machine
 app.post('/test-print', async (req: Request, res: Response) => {
