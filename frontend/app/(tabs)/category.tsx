@@ -144,6 +144,19 @@ const TableItemComponent = React.memo(
       ui = getStatusUI(4);
     }
 
+    // 🌹 QR PAID: entryStatus='q' + paymentStatus=1 → Rose card + "Paid" label
+    const rawEntryStatus = tableData?.entryStatus !== undefined
+      ? tableData.entryStatus
+      : item.entryStatus;
+    const rawPaymentStatus = (tableData as any)?.paymentStatus !== undefined
+      ? (tableData as any).paymentStatus
+      : item.paymentStatus;
+    const isPaid = rawEntryStatus === 'q' && Number(rawPaymentStatus) === 1;
+
+    if (isPaid) {
+      ui = { text: 'PAID', color: '#f43f5e', lightBg: '#fff1f2' };
+    }
+
     const borderColor = status === 0 ? Theme.border : ui.color;
     const bgColor = status !== 0 ? ui.lightBg : Theme.bgCard;
     const textColor = status === 0 ? Theme.textPrimary : ui.color;
@@ -160,7 +173,8 @@ const TableItemComponent = React.memo(
 
     return (
       <TouchableOpacity
-        activeOpacity={0.8}
+        activeOpacity={isPaid ? 1 : 0.8}
+        disabled={isPaid}
         style={[
           styles.tableBox,
           {
@@ -170,6 +184,7 @@ const TableItemComponent = React.memo(
             backgroundColor: bgColor,
             borderWidth: status !== 0 ? 2 : 1.5,
             elevation: status !== 0 ? 0 : 2,
+            opacity: isPaid ? 0.92 : 1,
           },
         ]}
         onPress={() => onPress(item, tableData)}
@@ -345,6 +360,7 @@ type TableItem = {
   isOvertime?: number;
   isHoldOvertime?: number;
   entryStatus?: string;
+  paymentStatus?: number;
   customerName?: string;
   pax?: number;
 };
@@ -670,6 +686,7 @@ export default function Category() {
           isHoldOvertime: Number(item.isHoldOvertime) || 0,
           lastModified: item.ModifiedOn,
           entryStatus: item.entryStatus || item.entry_status,
+          paymentStatus: Number(item.paymentStatus) || 0,
           customerName: item.customerName || item.CustomerName || null,
           pax: item.pax || item.Pax || null,
         }));
@@ -715,6 +732,8 @@ export default function Category() {
             totalAmount: t.totalAmount,
             isHoldOvertime: t.isHoldOvertime === 1 || !!t.isHoldOvertime,
             lastModified: (t as any).lastModified,
+            entryStatus: t.entryStatus ?? undefined,
+            paymentStatus: t.paymentStatus ?? 0,
             customerName: t.customerName ?? undefined,
             pax: t.pax ?? undefined,
           };
@@ -1004,6 +1023,22 @@ export default function Category() {
 
   const handleTablePress = React.useCallback(
     async (item: TableItem, tableData: any, isCheckoutAction?: boolean) => {
+      // 🌹 PAID QR TABLE: Block entry — table is paid and waiting for kitchen to serve
+      const tablePaymentStatus = (tableData as any)?.paymentStatus !== undefined
+        ? Number((tableData as any).paymentStatus)
+        : Number(item.paymentStatus) || 0;
+      const tableEntryStatus = tableData?.entryStatus !== undefined
+        ? tableData.entryStatus
+        : item.entryStatus;
+      if (tableEntryStatus === 'q' && tablePaymentStatus === 1) {
+        showToast({
+          type: 'info',
+          message: 'Order Paid',
+          subtitle: 'This QR order is already paid. Waiting for kitchen to serve.',
+        });
+        return;
+      }
+
       const effectiveStatus =
         tableData && tableData.status !== "EMPTY"
           ? tableData.status === "SENT"

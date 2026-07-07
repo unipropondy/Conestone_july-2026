@@ -95,7 +95,7 @@ const defaultConfig: BridgeConfig = {
     },
     {
       name: 'QR POS',
-      url: 'https://qrcode-conestone-production.up.railway.app',
+      url: 'https://new-qrcode-production.up.railway.app',
       enabled: true
     }
   ]

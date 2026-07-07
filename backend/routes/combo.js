@@ -4,8 +4,6 @@ const sql = require("mssql");
 const { poolPromise } = require("../config/db");
 const { authenticateToken } = require("../middleware/auth");
 
-// All combo routes require authentication
-router.use(authenticateToken);
 
 // ─────────────────────────────────────────────────────────────────
 // SIMPLE IN-MEMORY CACHE (same pattern as menu.js)
@@ -23,7 +21,13 @@ function setCache(key, data) {
 }
 function invalidateComboCache(dishId) {
   cache.delete("combo_list");
-  if (dishId) cache.delete(`combo_config_${dishId}`);
+  if (dishId) {
+    for (const key of cache.keys()) {
+      if (key.startsWith(`combo_config_${dishId}`)) {
+        cache.delete(key);
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -46,7 +50,7 @@ router.get("/list", async (req, res) => {
         d.DishGroupId,
         d.IsActive,
         ISNULL(d.isServiceCharge, 1) AS IsServiceCharge
-      FROM DishMaster d
+      FROM DishMaster d WITH (NOLOCK)
       WHERE d.IsCombo = 1
         AND d.IsActive = 1
       ORDER BY d.Name ASC
@@ -82,7 +86,7 @@ router.get("/config/:DishId", async (req, res) => {
       .input("DishId", sql.UniqueIdentifier, DishId)
       .query(`
         SELECT DishId, Name, currentcost AS BasePrice, Description
-        FROM DishMaster
+        FROM DishMaster WITH (NOLOCK)
         WHERE DishId = @DishId AND IsCombo = 1 AND IsActive = 1
       `);
 
@@ -104,7 +108,7 @@ router.get("/config/:DishId", async (req, res) => {
           MinSelection,
           MaxSelection,
           IsMultiSelect
-        FROM ComboGroupMaster
+        FROM ComboGroupMaster WITH (NOLOCK)
         WHERE ParentComboDishId = @DishId
           AND IsActive = 1
         ORDER BY DisplayOrder ASC
@@ -137,9 +141,19 @@ router.get("/config/:DishId", async (req, res) => {
         m.Surcharge,
         d.currentcost AS DishPrice,
         m.IsDefault,
-        m.SortOrder
-      FROM ComboGroupDishMapping m
-      INNER JOIN DishMaster d ON m.DishId = d.DishId AND d.IsActive = 1
+        m.SortOrder,
+        ISNULL(ckt.KitchenTypeCode, '2') as KitchenTypeCode,
+        ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'KITCHEN') as KitchenTypeName,
+        pm.PrinterPath AS PrinterIP
+      FROM ComboGroupDishMapping m WITH (NOLOCK)
+      INNER JOIN DishMaster d WITH (NOLOCK) ON m.DishId = d.DishId AND d.IsActive = 1
+      LEFT JOIN DishGroupMaster dgm WITH (NOLOCK) ON d.DishGroupId = dgm.DishGroupId
+      LEFT JOIN CategoryMaster cat WITH (NOLOCK) ON dgm.CategoryId = cat.CategoryId
+      LEFT JOIN CategoryKitchenType ckt WITH (NOLOCK) ON dgm.CategoryId = ckt.CategoryId
+      LEFT JOIN (
+        SELECT *, ROW_NUMBER() OVER(PARTITION BY KitchenTypeValue ORDER BY PrinterId) as rn 
+        FROM PrintMaster WITH (NOLOCK) WHERE IsActive = 1 AND PrinterType = 2
+      ) pm ON CAST(ckt.KitchenTypeCode AS INT) = pm.KitchenTypeValue AND pm.rn = 1
       WHERE m.ComboGroupId IN (${groupIds})
         AND m.IsActive = 1
         ${storeFilter}
@@ -159,6 +173,9 @@ router.get("/config/:DishId", async (req, res) => {
         dishPrice:       parseFloat(opt.DishPrice || 0),
         isDefault:       !!opt.IsDefault,
         sortOrder:       opt.SortOrder,
+        KitchenTypeCode: opt.KitchenTypeCode,
+        KitchenTypeName: opt.KitchenTypeName,
+        PrinterIP:       opt.PrinterIP,
       });
     });
 
@@ -185,6 +202,9 @@ router.get("/config/:DishId", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// All write combo routes require authentication
+router.use(authenticateToken);
 
 // ─────────────────────────────────────────────────────────────────
 // POST /api/combo
@@ -326,5 +346,10 @@ router.delete("/:DishId", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+router.clearCache = () => {
+  cache.clear();
+  console.log("⚡ [ComboCache] Cache INVALIDATION: All combo cache cleared");
+};
 
 module.exports = router;

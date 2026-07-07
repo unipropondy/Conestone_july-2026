@@ -661,21 +661,23 @@ const CartItemRow = React.memo(
                   </Text>
                 ))}
               {item.isCombo && item.comboSelections && Array.isArray(item.comboSelections) &&
-                item.comboSelections.map((group: any, gIdx: number) => (
-                  <View key={`g-${gIdx}`} style={{ marginTop: 2, paddingLeft: 2 }}>
-                    <Text style={[styles.modifierTextSmall, { fontFamily: Fonts.bold, color: Theme.primary }]}>
-                      {group.groupName}:
-                    </Text>
-                    {(group.items || []).map((opt: any, oIdx: number) => {
-                      const effectiveAdd = (parseFloat(opt.surcharge || 0) + parseFloat(opt.dishPrice || 0));
-                      return (
-                        <Text key={`o-${oIdx}`} style={[styles.modifierTextSmall, { paddingLeft: 6 }]}>
-                          ↳ {opt.name}{effectiveAdd > 0 ? ` (+$${effectiveAdd.toFixed(2)})` : ""}
-                        </Text>
-                      );
-                    })}
-                  </View>
-                ))}
+                item.comboSelections
+                  .filter((group: any) => group.items && group.items.length > 0)
+                  .map((group: any, gIdx: number) => (
+                    <View key={`g-${gIdx}`} style={{ marginTop: 2, paddingLeft: 2 }}>
+                      <Text style={[styles.modifierTextSmall, { fontFamily: Fonts.bold, color: Theme.primary }]}>
+                        {group.groupName}:
+                      </Text>
+                      {(group.items || []).map((opt: any, oIdx: number) => {
+                        const effectiveAdd = (parseFloat(opt.surcharge || 0) + parseFloat(opt.dishPrice || 0));
+                        return (
+                          <Text key={`o-${oIdx}`} style={[styles.modifierTextSmall, { paddingLeft: 6 }]}>
+                            ↳ {opt.name}{effectiveAdd > 0 ? ` (+$${effectiveAdd.toFixed(2)})` : ""}
+                          </Text>
+                        );
+                      })}
+                    </View>
+                  ))}
               {item.note || item.notes ? (
                 <Text style={styles.modifierTextSmall}>
                   • Note: {item.note || item.notes}
@@ -1404,65 +1406,17 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
       createdAt: Date.now(),
     });
 
-    // 2. Start Printers immediately (No waiting)
+    // 2. Start Printers immediately (No waiting) — delegated to shared pipeline
     (async () => {
-      const kitchenGroups: Record<string, any[]> = {};
-      currentItems.forEach((item: any) => {
-        const kCode = item.KitchenTypeCode || "0";
-        if (!kitchenGroups[kCode]) kitchenGroups[kCode] = [];
-
-        kitchenGroups[kCode].push(item);
-      });
-
-      for (const [kCode, items] of Object.entries(kitchenGroups)) {
-        const printerIp = items[0].PrinterIP;
-        const kotData = {
-          orderId: currentOrderId,
-          orderNo: currentOrderId,
-          tableNo:
-            orderContext.orderType === "DINE_IN"
-              ? orderContext.tableNo
-              : `TW-${orderContext.takeawayNo}`,
-          waiterName: user?.userName || "Staff",
-          items: items,
-          kitchenName:
-            items[0].KitchenTypeName || (kCode === "0" ? "KITCHEN" : kCode),
-        };
-        const isAdditional = cart.some((i: any) => isItemSent(i));
-        if (enableKOT) {
-          await UniversalPrinter.printKOT(
-            kotData,
-            "SYSTEM",
-            isAdditional ? "ADDITIONAL" : "NEW",
-            printerIp,
-          );
-        } else {
-          console.log("🖨️ [SidebarTurboPrint] KOT printing is disabled in General Settings.");
-        }
-      }
-
-      // 🚀 KDS Auto-Print Copy
-      const enableKDSPrint = useGeneralSettingsStore.getState().settings.enableKDSPrint !== false;
-      if (enableKDSPrint) {
-        (async () => {
-          try {
-            const kdsData = {
-              orderId: currentOrderId,
-              orderNo: currentOrderId,
-              tableNo:
-                orderContext.orderType === "DINE_IN"
-                  ? orderContext.tableNo
-                  : `TW-${orderContext.takeawayNo}`,
-              waiterName: user?.userName || "Staff",
-              items: currentItems,
-              kitchenName: "KDS",
-            };
-            await UniversalPrinter.printKDSOrder(kdsData, "SYSTEM");
-          } catch (err) {
-            console.error("KDS Auto-Print failed:", err);
-          }
-        })();
-      }
+      const isAdditional = cart.some((i: any) => isItemSent(i));
+      await UniversalPrinter.routeAndPrintOrderKOT(
+        currentOrderId,
+        orderContext,
+        currentItems,
+        isAdditional,
+        user?.userName || "Staff",
+        true // skipDuplicateGuard: cashier manual send is always authoritative
+      );
     })();
 
     // 3. Close Sidebar & Redirect instantly
@@ -1947,50 +1901,20 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
                         </>
                       );
                     } else if (currentTableStatus === "SENT" || currentTableStatus === "HOLD") {
-                      // Dine-in Flow 2: 2-button layout when unsentCount === 0 and status is SENT or HOLD
+                      // Dine-in Flow 2: Only show Pay button when unsentCount === 0
                       return (
-                        <>
-                          {/* KOT button (Indigo, text 'KOT', 50px) */}
-                          <TouchableOpacity
-                            disabled={isCheckingOut}
-                            style={[
-                              styles.compactIconBtn,
-                              { backgroundColor: "#4F46E5" },
-                              isCheckingOut && { opacity: 0.6 }
-                            ]}
-                            onPress={async () => {
-                              if (isCheckingOut) return;
-                              setIsCheckingOut(true);
-                              try {
-                                await handleSendOrder(true);
-                              } catch (err) {
-                                console.error("KOT send error:", err);
-                              } finally {
-                                setIsCheckingOut(false);
-                              }
-                            }}
-                          >
-                            {isCheckingOut ? (
-                              <ActivityIndicator size="small" color="#fff" />
-                            ) : (
-                              <Text style={{ color: "#fff", fontFamily: Fonts.black, fontSize: 13 }}>KOT</Text>
-                            )}
-                          </TouchableOpacity>
-
-                          {/* Pay button (Green, flex-grow) */}
-                          <TouchableOpacity
-                            style={[
-                              styles.proceedBtn,
-                              { backgroundColor: "#10B981" },
-                            ]}
-                            onPress={() => {
-                              router.push("/summary");
-                            }}
-                          >
-                            <Ionicons name="card-outline" size={iconSize} color="#fff" />
-                            <Text style={styles.btnText}>Pay</Text>
-                          </TouchableOpacity>
-                        </>
+                        <TouchableOpacity
+                          style={[
+                            styles.proceedBtn,
+                            { flex: 1, backgroundColor: "#10B981" },
+                          ]}
+                          onPress={() => {
+                            router.push("/summary");
+                          }}
+                        >
+                          <Ionicons name="card-outline" size={iconSize} color="#fff" />
+                          <Text style={styles.btnText}>Pay</Text>
+                        </TouchableOpacity>
                       );
                     } else if (currentTableStatus === "BILL_REQUESTED") {
                       // Dine-in Flow 2: 1-button layout when status is BILL_REQUESTED

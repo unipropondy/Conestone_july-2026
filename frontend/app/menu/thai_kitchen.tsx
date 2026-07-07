@@ -448,13 +448,41 @@ export default function MenuScreen() {
     try {
       const cart = useCartStore.getState().carts[currentContextId!] || [];
       const kitchenGroups: Record<string, any[]> = {};
+      const expandedItems: any[] = [];
+      
       cart
         .filter((i: any) => i.status !== "VOIDED")
         .forEach((item: any) => {
-          const kCode = item.KitchenTypeCode || "0";
-          if (!kitchenGroups[kCode]) kitchenGroups[kCode] = [];
-          kitchenGroups[kCode].push(item);
+          expandedItems.push(item);
+          if (item.comboSelections && item.comboSelections.length > 0) {
+            item.comboSelections.forEach((g: any) => {
+              if (Array.isArray(g.items)) {
+                g.items.forEach((opt: any) => {
+                  const optKitchenCode = opt.KitchenTypeCode || opt.kitchenCode || opt.kitchenTypeCode;
+                  const parentKitchenCode = item.KitchenTypeCode || item.kitchenCode || item.kitchenTypeCode || "0";
+                  if (optKitchenCode && optKitchenCode !== parentKitchenCode) {
+                    expandedItems.push({
+                      ...opt,
+                      id: opt.dishId,
+                      qty: item.quantity || item.qty || 1,
+                      price: 0,
+                      name: `${opt.name} (Combo - ${item.name})`,
+                      KitchenTypeCode: optKitchenCode,
+                      KitchenTypeName: opt.KitchenTypeName || opt.kitchenTypeName,
+                      PrinterIP: opt.PrinterIP || opt.printerIp,
+                    });
+                  }
+                });
+              }
+            });
+          }
         });
+
+      expandedItems.forEach((item: any) => {
+        const kCode = item.KitchenTypeCode || "0";
+        if (!kitchenGroups[kCode]) kitchenGroups[kCode] = [];
+        kitchenGroups[kCode].push(item);
+      });
 
       for (const [kCode, items] of Object.entries(kitchenGroups)) {
         const kName =
@@ -926,7 +954,8 @@ export default function MenuScreen() {
       }
 
       // COMBO ITEM: Open wizard customizer instead of standard cart addition
-      const isItCombo = dish.IsCombo === true || String(dish.IsCombo) === "1" || String(dish.IsCombo) === "true";
+      const isComboEnabled = useGeneralSettingsStore.getState().settings.enableCombo !== false;
+      const isItCombo = isComboEnabled && (dish.IsCombo === true || String(dish.IsCombo) === "1" || String(dish.IsCombo) === "true");
       if (isItCombo) {
         setComboDish(dish);
         setShowComboModal(true);
