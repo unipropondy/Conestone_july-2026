@@ -578,7 +578,11 @@ router.get("/detail/:id/payments", async (req, res) => {
           ptd.ReferenceNo,
           COALESCE(pm.Description, pm.PayMode) AS PayModeName
         FROM PaymentTransactionDetails ptd
-        LEFT JOIN Paymode pm ON pm.Position = ptd.PayModeId
+        LEFT JOIN (
+          SELECT Position, Description, PayMode,
+                 ROW_NUMBER() OVER (PARTITION BY Position ORDER BY (SELECT NULL)) as rn
+          FROM Paymode
+        ) pm ON pm.Position = ptd.PayModeId AND pm.rn = 1
         WHERE ptd.ReferenceId = @Id AND ptd.ReferenceType = 'BILL'
       `);
     
@@ -593,7 +597,11 @@ router.get("/detail/:id/payments", async (req, res) => {
             pd.Amount,
             COALESCE(pm.Description, pm.PayMode) AS PayModeName
           FROM PaymentDetailCur pd
-          LEFT JOIN Paymode pm ON pd.Paymode = pm.Position
+          LEFT JOIN (
+            SELECT Position, Description, PayMode,
+                   ROW_NUMBER() OVER (PARTITION BY Position ORDER BY (SELECT NULL)) as rn
+            FROM Paymode
+          ) pm ON pd.Paymode = pm.Position AND pm.rn = 1
           WHERE pd.RestaurantBillId = @Id
         `);
       
