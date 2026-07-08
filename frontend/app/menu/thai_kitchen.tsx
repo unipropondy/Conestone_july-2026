@@ -499,6 +499,7 @@ export default function MenuScreen() {
           waiterName: orderContext?.serverName || "Staff",
           items: items,
           kitchenName: kName,
+          kitchenCode: kCode,
         };
         if (enableKOT) {
           await UniversalPrinter.printKOT(

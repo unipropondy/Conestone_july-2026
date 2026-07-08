@@ -791,6 +791,7 @@ export default function SummaryScreen() {
           waiterName: context?.serverName || "Staff",
           items: items,
           kitchenName: kName,
+          kitchenCode: kCode,
         };
         if (enableKOT) {
           await UniversalPrinter.printKOT(
