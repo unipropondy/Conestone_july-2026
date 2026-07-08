@@ -211,6 +211,7 @@ class UniversalPrinter {
           items: groupItems,
           kitchenName:
             groupItems[0].KitchenTypeName || (kCode === "0" ? "KITCHEN" : kCode),
+          kitchenCode: kCode,
         };
         await this.printKOT(
           kotData,
