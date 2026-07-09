@@ -34,8 +34,8 @@ import TransactionCard from "../components/TransactionCard";
 import UniversalPrinter from "../components/UniversalPrinter";
 import { Fonts } from "../constants/Fonts";
 import { Theme } from "../constants/theme";
-import { getSingaporeDateString, parseDatabaseDate, formatToSingaporeDate } from "../utils/timezoneHelper";
 import { useAuthStore } from "../stores/authStore";
+import { formatToSingaporeDate, getSingaporeDateString, parseDatabaseDate } from "../utils/timezoneHelper";
 
 type FilterType = "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY" | "CUSTOM";
 type DetailReportType = "CATEGORY" | "DISH" | "SETTLEMENT" | "ARTIST_TARGET";
@@ -308,7 +308,7 @@ export default function SalesReport() {
               });
               return;
             }
-          } catch (e) {}
+          } catch (e) { }
         }
         setActivePaymentModes((prev) => {
           if (JSON.stringify(prev) === JSON.stringify(defaultModes)) return prev;
@@ -485,7 +485,7 @@ export default function SalesReport() {
         const start = new Date(selectedDate);
         start.setDate(1);
         startStr = getSingaporeDateString(start);
-        
+
         const end = new Date(selectedDate);
         const today = new Date();
         const endOfMonth = new Date(end.getFullYear(), end.getMonth() + 1, 0);
@@ -537,7 +537,7 @@ export default function SalesReport() {
         const start = new Date(selectedDate);
         start.setDate(1);
         startStr = getSingaporeDateString(start);
-        
+
         const end = new Date(selectedDate);
         const today = new Date();
         const endOfMonth = new Date(end.getFullYear(), end.getMonth() + 1, 0);
@@ -912,7 +912,7 @@ export default function SalesReport() {
       );
       const start = new Date(end);
       start.setDate(start.getDate() - 6);
-      
+
       const startStr = getSingaporeDateString(start);
       const endStr = selectedDate;
 
@@ -926,7 +926,7 @@ export default function SalesReport() {
       const yearNum = Number(parts[0]);
       const monthNum = Number(parts[1]);
       const lastDay = new Date(yearNum, monthNum, 0).getDate();
-      
+
       const startStr = `${parts[0]}-${parts[1]}-01`;
       const endStr = `${parts[0]}-${parts[1]}-${String(lastDay).padStart(2, "0")}`;
 
@@ -1205,7 +1205,7 @@ export default function SalesReport() {
           matchedMode = dbPaymentModes.find((m) => {
             const dbName = String(m.payMode || "").toUpperCase().trim();
             if ((dbName === "PAYNOW" || dbName === "PAY NOW" || dbName === "UPI" || dbName === "GPAY") &&
-                (salePayMode.includes("PAYNOW") || salePayMode.includes("PAY NOW") || salePayMode.includes("UPI") || salePayMode.includes("GPAY"))) {
+              (salePayMode.includes("PAYNOW") || salePayMode.includes("PAY NOW") || salePayMode.includes("UPI") || salePayMode.includes("GPAY"))) {
               return true;
             }
             if ((dbName === "CASH" || dbName === "CAS") && (salePayMode === "CASH" || salePayMode === "CAS")) {
@@ -1743,17 +1743,17 @@ export default function SalesReport() {
                           styles.reportCell,
                           styles.reportCellText,
                           styles.paymodeCell,
-                          { 
-                            color: row.Status === "Achieved" ? Theme.success : "#dc2626", 
-                            fontWeight: "bold", 
-                            textAlign: "center" 
+                          {
+                            color: row.Status === "Achieved" ? Theme.success : "#dc2626",
+                            fontWeight: "bold",
+                            textAlign: "center"
                           }
                         ]}
                       >
                         {row.Status || "Not Achieved"}
                       </Text>
                     </View>
-                   ));
+                  ));
                 }
 
                 if (isSettlement || !isDishReport) {
@@ -2006,14 +2006,14 @@ export default function SalesReport() {
             <Ionicons name="log-out" size={20} color={Theme.danger} />
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity 
+          <TouchableOpacity
             onPress={() => {
               if (router.canGoBack()) {
                 router.back();
               } else {
                 router.replace("/(tabs)/category" as any);
               }
-            }} 
+            }}
             style={styles.backBtn}
           >
             <Ionicons name="arrow-back" size={20} color={Theme.textPrimary} />
@@ -2529,11 +2529,11 @@ export default function SalesReport() {
             const layoutStyle = (SCREEN_W > 768
               ? { flex: 1, minWidth: 0 }
               : {
-                  width: SCREEN_W > 480 ? "31.5%" : "48%",
-                  minWidth: 0,
-                  paddingHorizontal: 4,
-                  paddingVertical: SCREEN_W < 480 ? 8 : 12
-                }) as any;
+                width: SCREEN_W > 480 ? "31.5%" : "48%",
+                minWidth: 0,
+                paddingHorizontal: 4,
+                paddingVertical: SCREEN_W < 480 ? 8 : 12
+              }) as any;
 
             const isSomeFilterApplied = activePaymentModes.length < (displayedBreakdownModes.length + 1);
             const isThisActive = activePaymentModes.includes(key);
@@ -2604,7 +2604,7 @@ export default function SalesReport() {
 
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <Text style={{ fontFamily: Fonts.extraBold, fontSize: SCREEN_W < 480 ? 12 : 13, color: Theme.textPrimary }}>Total Sales Volume</Text>
-            <Text 
+            <Text
               style={{ fontFamily: Fonts.black, fontSize: SCREEN_W < 480 ? 13 : 14, color: Theme.textPrimary, textAlign: "right" }}
               numberOfLines={1}
               adjustsFontSizeToFit
@@ -2620,7 +2620,7 @@ export default function SalesReport() {
               <Text style={{ fontFamily: Fonts.bold, fontSize: SCREEN_W < 480 ? 12 : 13, color: "#ec4899" }}>Member Accounts</Text>
             </View>
             <View style={{ alignItems: "flex-end" }}>
-              <Text 
+              <Text
                 style={{ fontFamily: Fonts.bold, fontSize: SCREEN_W < 480 ? 11 : 12, color: Theme.success, textAlign: "right" }}
                 numberOfLines={1}
                 adjustsFontSizeToFit
@@ -2638,14 +2638,14 @@ export default function SalesReport() {
               <Text style={{ fontFamily: Fonts.medium, fontSize: SCREEN_W < 480 ? 8 : 9, color: Theme.textMuted, marginTop: 1 }}>Collections vs New Outstanding</Text>
             </View>
             <View style={{ alignItems: "flex-end" }}>
-              <Text 
+              <Text
                 style={{ fontFamily: Fonts.bold, fontSize: SCREEN_W < 480 ? 11 : 12, color: Theme.success, textAlign: "right" }}
                 numberOfLines={1}
                 adjustsFontSizeToFit
               >
                 Collected: {formatCurrency(filteredMetrics.CreditPaymentsCollected)}
               </Text>
-              <Text 
+              <Text
                 style={{ fontFamily: Fonts.bold, fontSize: SCREEN_W < 480 ? 11 : 12, color: "#e11d48", marginTop: 1, textAlign: "right" }}
                 numberOfLines={1}
                 adjustsFontSizeToFit
@@ -2660,7 +2660,7 @@ export default function SalesReport() {
               <Text style={{ fontFamily: Fonts.black, fontSize: SCREEN_W < 480 ? 11.5 : 13, color: Theme.success }}>Total Collections Volume</Text>
               <Text style={{ fontFamily: Fonts.medium, fontSize: SCREEN_W < 480 ? 8 : 9, color: Theme.textMuted, marginTop: 1 }}>Cash Received (excl. Credit Sales) + Payments Collected</Text>
             </View>
-            <Text 
+            <Text
               style={{ fontFamily: Fonts.black, fontSize: SCREEN_W < 480 ? 15 : 18, color: Theme.success, textAlign: "right" }}
               numberOfLines={1}
               adjustsFontSizeToFit

@@ -14,7 +14,7 @@ const PaymentService = require('../services/payment.service');
 
 // Helper to generate a random 8-character hex ID (e.g. A996E780)
 const generateRandomBillId = () => {
-    return Math.random().toString(16).slice(2, 10).toUpperCase();
+  return Math.random().toString(16).slice(2, 10).toUpperCase();
 };
 
 const normalizeReportPayModeSql = (columnName = "sts.PayMode", settlementIdColumn = "sh.SettlementID") => {
@@ -115,7 +115,7 @@ const parseCsv = (value) => String(value || "")
 
 const normalizePayMode = (paymentMethod = "CASH") => {
   const raw = String(paymentMethod || "CASH").toUpperCase().trim();
-  
+
   if (raw.includes("CASH") || raw === "CAS") return "CASH";
   if (raw.includes("YEAHPAY PAYNOW") || raw === "YEAHPAY PAYNOW") return "Yeahpay Paynow";
   if (raw.includes("YEAHPAY CARD") || raw === "YEAHPAY CARD") return "Yeahpay Card";
@@ -125,7 +125,7 @@ const normalizePayMode = (paymentMethod = "CASH") => {
   if (raw.includes("NETS")) return "NETS";
   if (raw.includes("MEMBER") || raw === "5") return "MEMBER";
   if (raw.includes("CREDIT") || raw === "6") return "CREDIT";
-  
+
   return raw;
 };
 
@@ -200,13 +200,13 @@ router.get("/all", async (req, res) => {
 
     let queryStr = "";
     if (useRange) {
-      const shWhere = getReportDateWhereSqlForRange(startDate, endDate, "sh.LastSettlementDate");
+      const shWhere = getReportDateWhereSqlForRange(startDate, endDate, "sh.start_date");
       const cctWhere = getReportDateWhereSqlForRange(startDate, endDate, "cct.CreatedDate");
       queryStr = `
         SELECT * FROM (
           SELECT 
             sh.SettlementID, 
-            sh.LastSettlementDate AS SettlementDate, 
+            sh.start_date AS SettlementDate, 
             sh.BillNo AS OrderId, 
             sh.OrderType,
             sh.TableNo, 
@@ -296,7 +296,7 @@ router.get("/all", async (req, res) => {
         SELECT TOP 200 * FROM (
           SELECT 
             sh.SettlementID, 
-            sh.LastSettlementDate AS SettlementDate, 
+            sh.start_date AS SettlementDate, 
             sh.BillNo AS OrderId, 
             sh.OrderType,
             sh.TableNo, 
@@ -404,7 +404,7 @@ router.get("/all", async (req, res) => {
             LEFT JOIN RestaurantOrderCur ro_cur ON omh.ChildOrderId = ro_cur.OrderId
             WHERE omh.ParentOrderId IN (${formattedIds})
           `);
-          
+
           mergeResult.recordset.forEach(row => {
             const parentId = String(row.ParentOrderId).toLowerCase();
             const childTable = String(row.ChildTableNo || "").trim();
@@ -422,7 +422,7 @@ router.get("/all", async (req, res) => {
 
       records.forEach(row => {
         const parentId = row.MasterOrderId ? String(row.MasterOrderId).toLowerCase() : null;
-        
+
         // 1. Merge details
         if (parentId && mergeMap[parentId]) {
           row.isMerged = true;
@@ -458,14 +458,14 @@ router.get("/transactions", async (req, res) => {
       .input("Start", sql.DateTime, startDate || new Date(new Date().setDate(new Date().getDate() - 30)))
       .input("End", sql.DateTime, endDate || new Date())
       .query(`
-        SELECT sh.SettlementID, sh.LastSettlementDate as LastSettlementDate, sh.BillNo, sh.SysAmount AS TotalAmount, sts.PayMode,
-        CONVERT(VARCHAR(8), sh.LastSettlementDate, 112) + '-' + RIGHT('0000' + CAST(sh.OrderId AS VARCHAR(10)), 4) AS OrderId,
+        SELECT sh.SettlementID, sh.start_date as LastSettlementDate, sh.BillNo, sh.SysAmount AS TotalAmount, sts.PayMode,
+        CONVERT(VARCHAR(8), sh.start_date, 112) + '-' + RIGHT('0000' + CAST(sh.OrderId AS VARCHAR(10)), 4) AS OrderId,
         sh.IsCancelled, sh.CancellationReason
         FROM SettlementHeader sh
         LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
-        WHERE sh.LastSettlementDate >= DATEADD(hour, -12, CAST(@Start AS DATETIME))
-        AND sh.LastSettlementDate <= DATEADD(hour, 36, CAST(@End AS DATETIME))
-        ORDER BY sh.LastSettlementDate DESC
+        WHERE sh.start_date >= @Start
+        AND sh.start_date < DATEADD(DAY,1,@End)
+        ORDER BY sh.start_date DESC
       `);
     res.json(result.recordset);
   } catch (err) {
@@ -485,8 +485,8 @@ router.get("/range", async (req, res) => {
         COUNT(sh.SettlementID) AS TransactionCount
         FROM SettlementHeader sh
         INNER JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
-        WHERE sh.LastSettlementDate >= DATEADD(hour, -12, CAST(@Start AS DATETIME))
-        AND sh.LastSettlementDate <= DATEADD(hour, 36, CAST(@End AS DATETIME))
+        WHERE sh.start_date >= @Start
+AND sh.start_date < DATEADD(DAY,1,@End)
       `);
     res.json(result.recordset[0]);
   } catch (err) {
@@ -505,17 +505,17 @@ router.get("/detail/:id", async (req, res) => {
     const itemsResult = await pool.request()
       .input("Id", sql.UniqueIdentifier, cleanId)
       .query("SELECT * FROM SettlementItemDetail WHERE SettlementID = @Id");
-    
+
     const items = itemsResult.recordset || [];
-    
+
     if (items.length > 0) {
       // Fetch the master OrderId for this settlement from RestaurantInvoice
       const orderIdResult = await pool.request()
         .input("Id", sql.UniqueIdentifier, cleanId)
         .query("SELECT OrderId FROM RestaurantInvoice WHERE RestaurantBillId = @Id");
-        
+
       const orderId = orderIdResult.recordset[0]?.OrderId;
-      
+
       if (orderId) {
         // Fetch modifiers from both history and live tables
         const modifiersResult = await pool.request()
@@ -529,9 +529,9 @@ router.get("/detail/:id", async (req, res) => {
             FROM RestaurantmodifierdetailCur 
             WHERE OrderId = @OrderId
           `);
-          
+
         const modifiers = modifiersResult.recordset || [];
-        
+
         // Group modifiers by OrderDetailId (falling back to DishId for legacy compatibility)
         items.forEach(item => {
           const itemMods = modifiers
@@ -541,9 +541,9 @@ router.get("/detail/:id", async (req, res) => {
               }
               return m.DishId && item.DishId && String(m.DishId).toLowerCase() === String(item.DishId).toLowerCase();
             })
-            .map(m => ({ 
-              name: m.ModifierName, 
-              ModifierName: m.ModifierName, 
+            .map(m => ({
+              name: m.ModifierName,
+              ModifierName: m.ModifierName,
               Amount: m.Amount,
               ModifierId: m.ModifierId
             }));
@@ -551,7 +551,7 @@ router.get("/detail/:id", async (req, res) => {
         });
       }
     }
-    
+
     res.json(items);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -585,7 +585,7 @@ router.get("/detail/:id/payments", async (req, res) => {
         ) pm ON pm.Position = ptd.PayModeId AND pm.rn = 1
         WHERE ptd.ReferenceId = @Id AND ptd.ReferenceType = 'BILL'
       `);
-    
+
     let payments = result.recordset || [];
     if (payments.length === 0) {
       // Fallback 1: Query PaymentDetailCur / PaymentDetail to see if there is a single payment mode recorded
@@ -604,7 +604,7 @@ router.get("/detail/:id/payments", async (req, res) => {
           ) pm ON pd.Paymode = pm.Position AND pm.rn = 1
           WHERE pd.RestaurantBillId = @Id
         `);
-      
+
       if (pdResult.recordset.length > 0) {
         payments = pdResult.recordset.map(row => ({
           PaymentTransactionId: null,
@@ -648,10 +648,10 @@ router.get("/detail/:id/payments", async (req, res) => {
             ReferenceNo: null,
             PayModeName: payModeName ? payModeName.trim() : 'CASH'
           }];
+        }
       }
     }
-  }
-  res.json(payments);
+    res.json(payments);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -665,7 +665,7 @@ router.get("/category", async (req, res) => {
     const filter = req.query.filter || "daily";
     const date = req.query.date;
     const { startDate, endDate } = req.query;
-    const appDateWhereSql = await getReportDateWhereSql(filter, "sh.LastSettlementDate", date, startDate, endDate);
+    const appDateWhereSql = await getReportDateWhereSql(filter, "sh.start_date", date, startDate, endDate);
     const legacyDateWhereSql = await getReportDateWhereSql(filter, "InvoiceDate", date, startDate, endDate);
     console.log(`[REPORT API] type=category filter=${filter} date=${date || 'today'} range=${startDate || ''}..${endDate || ''}`);
 
@@ -725,7 +725,7 @@ router.get("/category", async (req, res) => {
           LEFT JOIN DishMaster d ON rod.DishId = d.DishId
           LEFT JOIN DishGroupMaster dg ON d.DishGroupId = dg.DishGroupId
           LEFT JOIN CategoryMaster cm ON dg.CategoryId = cm.CategoryId
-          WHERE ${appDateWhereSql.replace(/sh\.OrderDate|sh\.LastSettlementDate/g, 'ro.OrderDateTime')}
+          WHERE ${appDateWhereSql.replace(/sh\.OrderDate|sh\.start_date/g, 'ro.start_date')}
             AND ISNULL(ro.StatusCode, 0) = 3
             AND NOT EXISTS (
               SELECT 1 FROM SettlementHeader sh_dup 
@@ -761,7 +761,7 @@ router.get("/dish", async (req, res) => {
     const filter = req.query.filter || "daily";
     const date = req.query.date;
     const { startDate, endDate } = req.query;
-    const appDateWhereSql = await getReportDateWhereSql(filter, "sh.LastSettlementDate", date, startDate, endDate);
+    const appDateWhereSql = await getReportDateWhereSql(filter, "sh.start_date", date, startDate, endDate);
     const legacyDateWhereSql = await getReportDateWhereSql(filter, "InvoiceDate", date, startDate, endDate);
     console.log(`[REPORT API] type=dish filter=${filter} date=${date || 'today'} range=${startDate || ''}..${endDate || ''}`);
 
@@ -831,7 +831,7 @@ router.get("/dish", async (req, res) => {
           LEFT JOIN DishMaster d ON rod.DishId = d.DishId
           LEFT JOIN DishGroupMaster dg ON d.DishGroupId = dg.DishGroupId
           LEFT JOIN CategoryMaster cm ON dg.CategoryId = cm.CategoryId
-          WHERE ${appDateWhereSql.replace(/sh\.OrderDate|sh\.LastSettlementDate/g, 'ro.OrderDateTime')}
+          WHERE ${appDateWhereSql.replace(/sh\.OrderDate|sh\.start_date/g, 'ro.start_date')}
             AND ISNULL(ro.StatusCode, 0) = 3
             AND NOT EXISTS (
               SELECT 1 FROM SettlementHeader sh_dup 
@@ -871,8 +871,8 @@ router.get("/settlement", async (req, res) => {
     const date = req.query.date;
     const { startDate, endDate } = req.query;
 
-    const appDateWhereSql = await getReportDateWhereSql(filter, "sh.LastSettlementDate", date, startDate, endDate);
-    
+    const appDateWhereSql = await getReportDateWhereSql(filter, "sh.start_date", date, startDate, endDate);
+
     const result = await pool.request().query(`
       WITH StandardSettlements AS (
         SELECT 
@@ -979,16 +979,16 @@ router.get("/day-end-summary", async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const today = new Date(new Date().getTime() + 8 * 60 * 60 * 1000).toISOString().split("T")[0];
-    
+
     // Default to today if no dates provided
     const start = startDate || today;
     const end = endDate || today;
-    
-    const whereSql = getReportDateWhereSqlForRange(start, end, "sh.LastSettlementDate");
+
+    const whereSql = getReportDateWhereSqlForRange(start, end, "sh.start_date");
     const ptdWhereSql = getReportDateWhereSqlForRange(start, end, "ptd.CreatedDate");
 
     console.log(`[DAY-END DEBUG] Fetching summary from ${start} to ${end}. SQL filter: ${whereSql}`);
-    
+
     const pool = await poolPromise;
 
     // 0. Organization Info (from CompanySettings)
@@ -1055,9 +1055,9 @@ router.get("/day-end-summary", async (req, res) => {
         FROM SettlementHeader sh
         WHERE ${whereSql}
       `);
- 
-    const analysis = analysisRes.recordset[0] || { 
-      BaseSales: 0, TotalSales: 0, TotalTax: 0, TotalDiscount: 0, TotalServiceCharge: 0, 
+
+    const analysis = analysisRes.recordset[0] || {
+      BaseSales: 0, TotalSales: 0, TotalTax: 0, TotalDiscount: 0, TotalServiceCharge: 0,
       TotalRoundOff: 0, TotalBills: 0, VoidQty: 0, VoidAmount: 0
     };
 
@@ -1084,7 +1084,7 @@ router.get("/day-end-summary", async (req, res) => {
           FROM SettlementHeader sh 
           WHERE ${whereSql}
             AND NOT EXISTS (SELECT 1 FROM SettlementDetail sd WHERE sd.SettlementId = sh.SettlementID)
-          ORDER BY sh.LastSettlementDate DESC
+         ORDER BY sh.start_date DESC
         `);
 
       const unrecordedCount = unrecordedRes.recordset.length;
@@ -1158,7 +1158,7 @@ router.get("/day-end-summary", async (req, res) => {
 
     const billCount = Number(analysis.TotalBills) || 0;
     console.log(`[DAY-END DEBUG] billCount: ${billCount}`);
-    
+
     // C. Settlement Paymode Breakdown
     console.log(`[DAY-END DEBUG] Fetching settlement breakdown...`);
     const settlementRes = await pool.request()
@@ -1189,7 +1189,7 @@ router.get("/day-end-summary", async (req, res) => {
         FROM SettlementHeader sh
         WHERE ${whereSql}
           AND sh.IsCancelled = 1
-        ORDER BY sh.LastSettlementDate DESC
+        ORDER BY sh.start_date DESC
       `);
 
     const settlementBreakdown = settlementRes.recordset || [];
@@ -1222,7 +1222,7 @@ router.get("/day-end-summary", async (req, res) => {
         totalDiscount: analysis.TotalDiscount || 0,
         totalServiceCharge: analysis.TotalServiceCharge || 0,
         roundOff: analysis.TotalRoundOff || 0,
-        netTotal: totalSales, 
+        netTotal: totalSales,
         billCount,
         avgPerBill: billCount > 0 ? (totalSales / billCount) : 0
       },
@@ -1258,7 +1258,8 @@ router.get("/daily/:date", async (req, res) => {
           ${normalizeReportPayModeSql("sts.PayMode")} AS PayMode
           FROM SettlementHeader sh
           LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
-          WHERE sh.LastSettlementDate BETWEEN @StartOfDay AND @EndOfDay
+          WHERE sh.start_date >= @StartOfDay
+            AND sh.start_date < DATEADD(DAY, 1, @StartOfDay)
         )
         SELECT COUNT(DISTINCT SettlementID) as TotalTransactions, ISNULL(SUM(SysAmount), 0) as TotalSales,
         ISNULL(SUM(CASE WHEN PayMode = 'CASH' THEN SysAmount ELSE 0 END), 0) as CashSales,
@@ -1289,9 +1290,10 @@ router.get("/daily-order-count", async (req, res) => {
       .query(`
         SELECT COUNT(SettlementID) as currentCount 
         FROM SettlementHeader 
-        WHERE LastSettlementDate BETWEEN @Start AND @End
+       WHERE start_date >= @Start
+AND start_date < DATEADD(DAY,1,@Start)
       `);
-    
+
     const count = result.recordset[0].currentCount || 0;
     res.json({ nextNumber: count + 1 });
   } catch (err) {
@@ -1358,6 +1360,13 @@ router.post("/save", async (req, res) => {
     let finalBillNo = null;
 
     await runInTransaction(async (transaction) => {
+      // Get Business Date
+      const dateResult = await transaction.request().query(`
+      SELECT TOP 1 StartDate 
+      FROM DateEntry
+  `);
+
+      const start_date = dateResult.recordset[0].StartDate;
       if (clientSettlementId) {
         settlementId = clientSettlementId;
       } else {
@@ -1402,20 +1411,20 @@ router.post("/save", async (req, res) => {
       // Calculate creditAmount across single and split payments
       const unifiedPayments = (payments && Array.isArray(payments) && payments.length > 0)
         ? payments.map(p => {
-            const pmInfo = activePaymodes.find(x => 
-              x.Position === Number(p.payModeId) || 
-              String(x.PayMode).trim().toUpperCase() === String(p.payModeId || p.payMode || p.PaymentMethod || "").trim().toUpperCase()
-            );
-            const pmName = pmInfo ? String(pmInfo.PayMode).trim() : String(p.payMode || p.PaymentMethod || "CASH").trim();
-            return {
-              PaymentMethod: pmName,
-              Amount: p.amount || p.Amount || 0
-            };
-          })
+          const pmInfo = activePaymodes.find(x =>
+            x.Position === Number(p.payModeId) ||
+            String(x.PayMode).trim().toUpperCase() === String(p.payModeId || p.payMode || p.PaymentMethod || "").trim().toUpperCase()
+          );
+          const pmName = pmInfo ? String(pmInfo.PayMode).trim() : String(p.payMode || p.PaymentMethod || "CASH").trim();
+          return {
+            PaymentMethod: pmName,
+            Amount: p.amount || p.Amount || 0
+          };
+        })
         : [{
-            PaymentMethod: String(paymentMethod || "CASH").trim(),
-            Amount: totalAmount || 0
-          }];
+          PaymentMethod: String(paymentMethod || "CASH").trim(),
+          Amount: totalAmount || 0
+        }];
 
       const creditAmount = unifiedPayments
         .filter(
@@ -1448,31 +1457,31 @@ router.post("/save", async (req, res) => {
         }
       }
 
-    // 2. Order ID Retrieval
-    const now = new Date();
-    displayOrderId = null;
-    let dailySequence = 0;
+      // 2. Order ID Retrieval
+      const now = new Date();
+      displayOrderId = null;
+      let dailySequence = 0;
 
-    const cleanTableId = toGuidOrNull(tableId);
-    if (cleanTableId) {
+      const cleanTableId = toGuidOrNull(tableId);
+      if (cleanTableId) {
         const tableCheck = await transaction.request()
-            .input("tid", sql.UniqueIdentifier, cleanTableId)
-            .query("SELECT CurrentOrderId FROM TableMaster WITH (UPDLOCK) WHERE TableId = @tid");
+          .input("tid", sql.UniqueIdentifier, cleanTableId)
+          .query("SELECT CurrentOrderId FROM TableMaster WITH (UPDLOCK) WHERE TableId = @tid");
         displayOrderId = tableCheck.recordset[0]?.CurrentOrderId;
-        
-        if (displayOrderId && displayOrderId.includes('-')) {
-            dailySequence = parseInt(displayOrderId.split('-')[1]) || 0;
-        }
-    }
 
-    if (!displayOrderId) {
+        if (displayOrderId && displayOrderId.includes('-')) {
+          dailySequence = parseInt(displayOrderId.split('-')[1]) || 0;
+        }
+      }
+
+      if (!displayOrderId) {
         // Fallback: Generate a new one if none exists (e.g., takeaway or direct pay)
-        const todayStr = new Date().toLocaleDateString('en-CA'); 
-        
+        const todayStr = new Date().toLocaleDateString('en-CA');
+
         let seqResult = await transaction.request()
-            .input("RestId", sql.UniqueIdentifier, businessUnitId)
-            .input("Today", sql.Date, todayStr)
-            .query(`
+          .input("RestId", sql.UniqueIdentifier, businessUnitId)
+          .input("Today", sql.Date, todayStr)
+          .query(`
               UPDATE OrderSequences 
               SET LastNumber = LastNumber + 1 
               OUTPUT INSERTED.LastNumber
@@ -1480,114 +1489,115 @@ router.post("/save", async (req, res) => {
             `);
 
         if (seqResult.recordset.length > 0) {
-            dailySequence = seqResult.recordset[0].LastNumber;
+          dailySequence = seqResult.recordset[0].LastNumber;
         } else {
-            await transaction.request()
-                .input("RestId", sql.UniqueIdentifier, businessUnitId)
-                .input("Today", sql.Date, todayStr)
-                .query(`
+          await transaction.request()
+            .input("RestId", sql.UniqueIdentifier, businessUnitId)
+            .input("Today", sql.Date, todayStr)
+            .query(`
                   INSERT INTO OrderSequences (RestaurantId, SequenceDate, LastNumber)
                   VALUES (@RestId, @Today, 1)
                 `);
-            dailySequence = 1;
+          dailySequence = 1;
         }
         displayOrderId = `${todayStr.replace(/-/g, '')}-${String(dailySequence).padStart(4, '0')}`;
         console.log(`[SAVE SALE] Generated NEW ID: ${displayOrderId}`);
-    } else {
+      } else {
         console.log(`[SAVE SALE] Using EXISTING ID: ${displayOrderId} (Seq: ${dailySequence})`);
-    }
+      }
 
-    // 2.5 Fetch Voided Items from Professional Detail Tables
-    let voidQty = 0;
-    let voidAmount = 0;
-        const voidRes = await transaction.request()
-            .input("orderNo", sql.NVarChar(100), displayOrderId)
-            .query(`
+      // 2.5 Fetch Voided Items from Professional Detail Tables
+      let voidQty = 0;
+      let voidAmount = 0;
+      const voidRes = await transaction.request()
+        .input("orderNo", sql.NVarChar(100), displayOrderId)
+        .query(`
                 SELECT SUM(d.Quantity) as VQty, SUM(d.TotalDetailLineAmount) as VAmt 
                 FROM RestaurantOrderDetailCur d
                 JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
                 WHERE h.OrderNumber = @orderNo AND d.StatusCode = 0
             `);
-        voidQty = voidRes.recordset[0]?.VQty || 0;
-        voidAmount = voidRes.recordset[0]?.VAmt || 0;
-        console.log(`[SAVE SALE] Voids captured from DB: Qty=${voidQty}, Amt=${voidAmount}`);
+      voidQty = voidRes.recordset[0]?.VQty || 0;
+      voidAmount = voidRes.recordset[0]?.VAmt || 0;
+      console.log(`[SAVE SALE] Voids captured from DB: Qty=${voidQty}, Amt=${voidAmount}`);
 
-        // 🚀 SYNC SYIELD: Fetch Master GUID OrderId for Relation Integrity
-        const guidRes = await transaction.request()
-            .input("orderNo", sql.NVarChar(100), displayOrderId)
-            .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WITH (UPDLOCK) WHERE OrderNumber = @orderNo");
-        const guidOrderId = guidRes.recordset[0]?.OrderId || settlementId; 
-        console.log(`[SAVE SALE] Master Sync -> GUID OrderId: ${guidOrderId} (Source: ${guidRes.recordset[0]?.OrderId ? 'Current' : 'Fallback-Settlement'})`);
+      // 🚀 SYNC SYIELD: Fetch Master GUID OrderId for Relation Integrity
+      const guidRes = await transaction.request()
+        .input("orderNo", sql.NVarChar(100), displayOrderId)
+        .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WITH (UPDLOCK) WHERE OrderNumber = @orderNo");
+      const guidOrderId = guidRes.recordset[0]?.OrderId || settlementId;
+      console.log(`[SAVE SALE] Master Sync -> GUID OrderId: ${guidOrderId} (Source: ${guidRes.recordset[0]?.OrderId ? 'Current' : 'Fallback-Settlement'})`);
 
-    // Split Bill unique bill/invoice suffix generator
-    finalBillNo = displayOrderId;
-    let splitIndexValue = null;
-    if (isSplit) {
-      const splitCountResult = await transaction.request()
+      // Split Bill unique bill/invoice suffix generator
+      finalBillNo = displayOrderId;
+      let splitIndexValue = null;
+      if (isSplit) {
+        const splitCountResult = await transaction.request()
+          .input("OrderId", sql.UniqueIdentifier, guidOrderId)
+          .query("SELECT COUNT(*) as count FROM RestaurantInvoice WHERE OrderId = @OrderId");
+        const splitCount = splitCountResult.recordset[0].count + 1;
+        finalBillNo = `${displayOrderId}-S${splitCount}`;
+        splitIndexValue = splitCount;
+      }
+      console.log(`[SAVE SALE] Final Bill No: ${finalBillNo} (isSplit: ${isSplit || false}, index: ${splitIndexValue || "none"})`);
+
+      // Merge history count retriever
+      const mergeCountResult = await transaction.request()
         .input("OrderId", sql.UniqueIdentifier, guidOrderId)
-        .query("SELECT COUNT(*) as count FROM RestaurantInvoice WHERE OrderId = @OrderId");
-      const splitCount = splitCountResult.recordset[0].count + 1;
-      finalBillNo = `${displayOrderId}-S${splitCount}`;
-      splitIndexValue = splitCount;
-    }
-    console.log(`[SAVE SALE] Final Bill No: ${finalBillNo} (isSplit: ${isSplit || false}, index: ${splitIndexValue || "none"})`);
+        .query("SELECT COUNT(*) as count FROM OrderMergeHistory WHERE ParentOrderId = @OrderId");
+      const childCount = mergeCountResult.recordset[0].count;
+      const mergeCount = childCount > 0 ? childCount + 1 : null;
+      console.log(`[SAVE SALE] Merge Count: ${mergeCount || "none"} (child count: ${childCount})`);
 
-    // Merge history count retriever
-    const mergeCountResult = await transaction.request()
-      .input("OrderId", sql.UniqueIdentifier, guidOrderId)
-      .query("SELECT COUNT(*) as count FROM OrderMergeHistory WHERE ParentOrderId = @OrderId");
-    const childCount = mergeCountResult.recordset[0].count;
-    const mergeCount = childCount > 0 ? childCount + 1 : null;
-    console.log(`[SAVE SALE] Merge Count: ${mergeCount || "none"} (child count: ${childCount})`);
+      const normalizedPayMode = normalizePayMode(paymentMethod);
+      const payModeCode = normalizedPayMode === "CASH" ? 1 : normalizedPayMode === "CARD" ? 2 : 3;
 
-    const normalizedPayMode = normalizePayMode(paymentMethod);
-    const payModeCode = normalizedPayMode === "CASH" ? 1 : normalizedPayMode === "CARD" ? 2 : 3;
-
-    const headerResult = await transaction.request()
-      .input("SettlementID", sql.UniqueIdentifier, settlementId)
-      .input("LastSettlementDate", sql.DateTime, now)
-      .input("SubTotal", sql.Money, subTotal || 0)
-      .input("TotalTax", sql.Money, taxAmount || 0)
-      .input("DiscountAmount", sql.Money, orderDiscountAmount || 0)
-      .input("DiscountType", sql.NVarChar(50), discountType || "fixed")
-      .input("BillNo", sql.NVarChar(50), finalBillNo)
-      .input("OrderType", sql.NVarChar(50), orderType || "DINE-IN")
-      .input("TableNo", sql.NVarChar(50), tableNo || null)
-      .input("Section", sql.NVarChar(100), section || null)
-      .input("MemberId", sql.UniqueIdentifier, toGuidOrNull(memberId))
-      .input("CashierID", sql.UniqueIdentifier, toGuidOrNull(cashierId))
-      .input("BusinessUnitId", sql.UniqueIdentifier, sanitizeGuid(businessUnitId))
-      .input("SysAmount", sql.Money, totalAmount || 0)
-      .input("ManualAmount", sql.Money, totalAmount || 0)
-      .input("CreatedBy", sql.UniqueIdentifier, sanitizeGuid(cashierId))
-      .input("CreatedOn", sql.DateTime, now)
-      .input("SER_NAME", sql.NVarChar(255), req.body.serverName || null)
-      .input("MobileNo", sql.NVarChar(50), req.body.mobileNo || req.body.MobileNo || null)
-      .input("VoidItemQty", sql.Int, voidQty)
-      .input("VoidItemAmount", sql.Money, voidAmount)
-      .input("RoundedBy", sql.Money, roundOff || 0)
-      .input("ServiceCharge", sql.Money, req.body.serviceCharge || 0)
-      .input("PayModeCode", sql.Int, payModeCode)
-      .input("DailySeq", sql.Int, dailySequence || 0)
-      .input("InvoiceOrderId", sql.UniqueIdentifier, guidOrderId)
-      .input("DiscountId", sql.UniqueIdentifier, toGuidOrNull(discountId))
-      .input("DiscountPercentage", sql.Decimal(18, 2), discountPercentage || null)
-      .input("DiscountRemarks", sql.NVarChar(1000), discountRemarks || null)
-      .input("TotalDiscountAmount", sql.Decimal(18, 2), discountAmount || 0)
-      .input("TotalLineItemDiscountAmount", sql.Decimal(18, 2), itemDiscountAmount || 0)
-      .input("MergeCount", sql.Numeric, mergeCount)
-      .input("SplitCount", sql.Numeric, splitIndexValue)
-      .input("GuestName", sql.NVarChar(9), req.body.customerName ? req.body.customerName.trim().substring(0, 9) : null)
-      .input("Pax", sql.Int, req.body.pax ? parseInt(req.body.pax) : null)
-      .query(`
+      const headerResult = await transaction.request()
+        .input("SettlementID", sql.UniqueIdentifier, settlementId)
+        .input("LastSettlementDate", sql.DateTime, now)
+        .input("StartDate", sql.DateTime, start_date)
+        .input("SubTotal", sql.Money, subTotal || 0)
+        .input("TotalTax", sql.Money, taxAmount || 0)
+        .input("DiscountAmount", sql.Money, orderDiscountAmount || 0)
+        .input("DiscountType", sql.NVarChar(50), discountType || "fixed")
+        .input("BillNo", sql.NVarChar(50), finalBillNo)
+        .input("OrderType", sql.NVarChar(50), orderType || "DINE-IN")
+        .input("TableNo", sql.NVarChar(50), tableNo || null)
+        .input("Section", sql.NVarChar(100), section || null)
+        .input("MemberId", sql.UniqueIdentifier, toGuidOrNull(memberId))
+        .input("CashierID", sql.UniqueIdentifier, toGuidOrNull(cashierId))
+        .input("BusinessUnitId", sql.UniqueIdentifier, sanitizeGuid(businessUnitId))
+        .input("SysAmount", sql.Money, totalAmount || 0)
+        .input("ManualAmount", sql.Money, totalAmount || 0)
+        .input("CreatedBy", sql.UniqueIdentifier, sanitizeGuid(cashierId))
+        .input("CreatedOn", sql.DateTime, now)
+        .input("SER_NAME", sql.NVarChar(255), req.body.serverName || null)
+        .input("MobileNo", sql.NVarChar(50), req.body.mobileNo || req.body.MobileNo || null)
+        .input("VoidItemQty", sql.Int, voidQty)
+        .input("VoidItemAmount", sql.Money, voidAmount)
+        .input("RoundedBy", sql.Money, roundOff || 0)
+        .input("ServiceCharge", sql.Money, req.body.serviceCharge || 0)
+        .input("PayModeCode", sql.Int, payModeCode)
+        .input("DailySeq", sql.Int, dailySequence || 0)
+        .input("InvoiceOrderId", sql.UniqueIdentifier, guidOrderId)
+        .input("DiscountId", sql.UniqueIdentifier, toGuidOrNull(discountId))
+        .input("DiscountPercentage", sql.Decimal(18, 2), discountPercentage || null)
+        .input("DiscountRemarks", sql.NVarChar(1000), discountRemarks || null)
+        .input("TotalDiscountAmount", sql.Decimal(18, 2), discountAmount || 0)
+        .input("TotalLineItemDiscountAmount", sql.Decimal(18, 2), itemDiscountAmount || 0)
+        .input("MergeCount", sql.Numeric, mergeCount)
+        .input("SplitCount", sql.Numeric, splitIndexValue)
+        .input("GuestName", sql.NVarChar(9), req.body.customerName ? req.body.customerName.trim().substring(0, 9) : null)
+        .input("Pax", sql.Int, req.body.pax ? parseInt(req.body.pax) : null)
+        .query(`
         -- 1. Insert into SettlementHeader
         INSERT INTO SettlementHeader (
-          SettlementID, LastSettlementDate, LastDayEndDate, SubTotal, TotalTax, DiscountAmount, DiscountType, 
+          SettlementID, LastSettlementDate,start_date, LastDayEndDate, SubTotal, TotalTax, DiscountAmount, DiscountType, 
           BillNo, OrderType, TableNo, Section, MemberId, CashierID, BusinessUnitId, 
           SysAmount, ManualAmount, CreatedBy, CreatedOn, SER_NAME, MobileNo, 
           VoidItemQty, VoidItemAmount, RoundedBy, ServiceCharge, GuestName, Pax
         ) VALUES (
-          @SettlementID, GETDATE(), GETDATE(), @SubTotal, @TotalTax, @DiscountAmount, @DiscountType, 
+          @SettlementID, GETDATE(),@StartDate, GETDATE(), @SubTotal, @TotalTax, @DiscountAmount, @DiscountType, 
           @BillNo, @OrderType, @TableNo, @Section, @MemberId, @CashierID, @BusinessUnitId, 
           @SysAmount, @ManualAmount, @CreatedBy, GETDATE(), @SER_NAME, @MobileNo, 
           @VoidItemQty, @VoidItemAmount, @RoundedBy, @ServiceCharge, @GuestName, @Pax
@@ -1599,13 +1609,13 @@ router.post("/save", async (req, res) => {
           TotalLineItemAmount, TotalTax, DiscountAmount, TotalAmount, StatusCode, 
           CreatedBy, CreatedOn, InvoiceDate, ServiceCharge, RoundedBy, TotalAmountLessFreight,
           PaymentTermCode, DiscountId, DiscountPercentage, DiscountRemarks, TotalDiscountAmount,
-          TotalLineItemDiscountAmount, MergeCount, SplitCount, Pax
+          TotalLineItemDiscountAmount, MergeCount, SplitCount, Pax,start_date
         ) VALUES (
           @BusinessUnitId, @SettlementID, @InvoiceOrderId, @BillNo, GETDATE(), GETDATE(),
           @SubTotal, @TotalTax, @DiscountAmount, @SysAmount, 5,
           @CreatedBy, GETDATE(), CAST(GETDATE() AS DATE), @ServiceCharge, @RoundedBy, @SubTotal,
           @PayModeCode, @DiscountId, @DiscountPercentage, @DiscountRemarks, @TotalDiscountAmount,
-          @TotalLineItemDiscountAmount, @MergeCount, @SplitCount, @Pax
+          @TotalLineItemDiscountAmount, @MergeCount, @SplitCount, @Pax,@StartDate
         );
 
         -- 2b. Insert into RestaurantInvoiceCur (Mirror for Backoffice Sync)
@@ -1614,21 +1624,21 @@ router.post("/save", async (req, res) => {
           TotalLineItemAmount, TotalTax, DiscountAmount, TotalAmount, StatusCode, 
           CreatedBy, CreatedOn, InvoiceDate, ServiceCharge, RoundedBy, TotalAmountLessFreight,
           PaymentTermCode, DiscountId, DiscountPercentage, DiscountRemarks, TotalDiscountAmount,
-          TotalLineItemDiscountAmount, MergeCount, SplitCount, Pax
+          TotalLineItemDiscountAmount, MergeCount, SplitCount, Pax,start_date
         ) VALUES (
           @BusinessUnitId, @SettlementID, @InvoiceOrderId, @BillNo, GETDATE(), GETDATE(),
           @SubTotal, @TotalTax, @DiscountAmount, @SysAmount, 5,
           @CreatedBy, GETDATE(), CAST(GETDATE() AS DATE), @ServiceCharge, @RoundedBy, @SubTotal,
           @PayModeCode, @DiscountId, @DiscountPercentage, @DiscountRemarks, @TotalDiscountAmount,
-          @TotalLineItemDiscountAmount, @MergeCount, @SplitCount, @Pax
+          @TotalLineItemDiscountAmount, @MergeCount, @SplitCount, @Pax,@StartDate
         );
       `);
 
-    // 3. Insert SettlementTotalSales
-    const receiptCount = Array.isArray(items) ? items.filter(i => i.status !== "VOIDED").reduce((sum, item) => sum + (Number(item.qty) || 0), 0) : 0;
+      // 3. Insert SettlementTotalSales
+      const receiptCount = Array.isArray(items) ? items.filter(i => i.status !== "VOIDED").reduce((sum, item) => sum + (Number(item.qty) || 0), 0) : 0;
 
       console.log(`[SAVE SALE] Step 3: Inserting Settlement Tables (ID: ${settlementId})...`);
-      
+
       if (payments && Array.isArray(payments) && payments.length > 0) {
         if (Number(discountAmount) > 0) {
           const discReq = transaction.request()
@@ -1689,7 +1699,7 @@ router.post("/save", async (req, res) => {
         console.log(`[SAVE SALE] Batching ${items.length} items to reduce DB round-trips...`);
         const dishIds = items.map(item => toGuidOrNull(item.dishId || item.id)).filter(Boolean);
         const dishNames = items.map(item => item.dish_name || item.name || "").filter(name => name.trim() !== "");
-        
+
         let metaMap = {};
         if (dishIds.length > 0 || dishNames.length > 0) {
           const req = transaction.request();
@@ -1727,13 +1737,13 @@ router.post("/save", async (req, res) => {
         // Prepare and execute all inserts in a single database round-trip
         const insertReq = transaction.request();
         insertReq.input("SettlementID", sql.UniqueIdentifier, settlementId);
-        
+
         let insertQueries = [];
         items.forEach((item, idx) => {
           const dishId = toGuidOrNull(item.dishId || item.id);
           const nameKey = (item.dish_name || item.name || "").trim().toLowerCase();
           const meta = (dishId && metaMap[String(dishId).toLowerCase()]) || metaMap[nameKey] || {};
-          
+
           insertReq.input(`DishId_${idx}`, sql.UniqueIdentifier, toGuidOrNull(meta.DishId || dishId));
           insertReq.input(`DishGroupId_${idx}`, sql.UniqueIdentifier, toGuidOrNull(meta.DishGroupId));
           insertReq.input(`CategoryId_${idx}`, sql.UniqueIdentifier, toGuidOrNull(meta.CategoryId));
@@ -1750,28 +1760,29 @@ router.post("/save", async (req, res) => {
           insertReq.input(`Salt_${idx}`, sql.NVarChar(50), item.salt || "");
           insertReq.input(`Oil_${idx}`, sql.NVarChar(50), item.oil || "");
           insertReq.input(`Sugar_${idx}`, sql.NVarChar(50), item.sugar || "");
+          insertReq.input("StartDate", sql.DateTime, start_date);
           insertReq.input(`OrderDetailId_${idx}`, sql.UniqueIdentifier, toGuidOrNull(item.lineItemId));
-          
+
           const comboJSON = item.comboSelections ? JSON.stringify(item.comboSelections) : null;
           insertReq.input(`ComboDetailsJSON_${idx}`, sql.NVarChar(sql.MAX), comboJSON);
-          
+
           insertQueries.push(`
-            INSERT INTO SettlementItemDetail (SettlementID, DishId, DishGroupId, SubCategoryId, CategoryId, DishName, SongName, Qty, Price, OrderDateTime, CategoryName, SubCategoryName, DiscountAmount, DiscountType, Status, Spicy, Salt, Oil, Sugar, OrderDetailId, ComboDetailsJSON)
-            VALUES (@SettlementID, @DishId_${idx}, @DishGroupId_${idx}, @DishGroupId_${idx}, @CategoryId_${idx}, @DishName_${idx}, @SongName_${idx}, @Qty_${idx}, @Price_${idx}, GETDATE(), @CategoryName_${idx}, @SubCategoryName_${idx}, @ItemDiscountAmount_${idx}, @ItemDiscountType_${idx}, @Status_${idx}, @Spicy_${idx}, @Salt_${idx}, @Oil_${idx}, @Sugar_${idx}, @OrderDetailId_${idx}, @ComboDetailsJSON_${idx});
+            INSERT INTO SettlementItemDetail (SettlementID, DishId, DishGroupId, SubCategoryId, CategoryId, DishName, SongName, Qty, Price, OrderDateTime, CategoryName, SubCategoryName, DiscountAmount, DiscountType, Status, Spicy, Salt, Oil, Sugar, OrderDetailId, ComboDetailsJSON,start_date)
+            VALUES (@SettlementID, @DishId_${idx}, @DishGroupId_${idx}, @DishGroupId_${idx}, @CategoryId_${idx}, @DishName_${idx}, @SongName_${idx}, @Qty_${idx}, @Price_${idx}, GETDATE(), @CategoryName_${idx}, @SubCategoryName_${idx}, @ItemDiscountAmount_${idx}, @ItemDiscountType_${idx}, @Status_${idx}, @Spicy_${idx}, @Salt_${idx}, @Oil_${idx}, @Sugar_${idx}, @OrderDetailId_${idx}, @ComboDetailsJSON_${idx},@StartDate);
           `);
         });
-        
+
         await insertReq.query(insertQueries.join("\n"));
         console.log(`[SAVE SALE] Batch insert complete for ${items.length} items.`);
       }
- 
+
       // 4.5 Capture and Insert VOIDED items for reporting
       if (displayOrderId) {
         try {
           const dbVoids = await transaction.request()
             .input("orderNo", sql.NVarChar(100), displayOrderId)
             .query(`
-              SELECT d.OrderDetailId, d.DishId, d.DishName, d.SongName, d.Quantity, d.PricePerUnit, dish.DishGroupId, dg.CategoryId, cm.CategoryName, dg.DishGroupName
+              SELECT d.OrderDetailId, d.DishId, d.DishName, d.SongName, d.Quantity, d.PricePerUnit, dish.DishGroupId, dg.CategoryId, cm.CategoryName, dg.DishGroupName,d.start_date
               FROM RestaurantOrderDetailCur d
               JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
               LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
@@ -1779,7 +1790,7 @@ router.post("/save", async (req, res) => {
               LEFT JOIN CategoryMaster cm ON dg.CategoryId = cm.CategoryId
               WHERE h.OrderNumber = @orderNo AND d.StatusCode = 0
             `);
-          
+
           for (const v of dbVoids.recordset) {
             await transaction.request()
               .input("sid", sql.UniqueIdentifier, settlementId)
@@ -1791,14 +1802,15 @@ router.post("/save", async (req, res) => {
               .input("catId", sql.UniqueIdentifier, v.CategoryId)
               .input("catName", sql.NVarChar(255), v.CategoryName)
               .input("groupName", sql.NVarChar(255), v.DishGroupName)
+              .input("StartDate", sql.DateTime, v.start_date)
               .input("OrderDetailId", sql.UniqueIdentifier, toGuidOrNull(v.OrderDetailId))
               .query(`
                 INSERT INTO SettlementItemDetail (
                   SettlementID, DishId, DishName, SongName, Qty, Price, Status, OrderDateTime,
-                  CategoryId, CategoryName, SubCategoryName, OrderDetailId
+                  CategoryId, CategoryName, SubCategoryName, OrderDetailId,start_date
                 ) VALUES (
                   @sid, @dishId, @dishName, @songName, @qty, @price, 'VOIDED', GETDATE(),
-                  @catId, @catName, @groupName, @OrderDetailId
+                  @catId, @catName, @groupName, @OrderDetailId,@StartDate
                 )
               `);
           }
@@ -1842,7 +1854,7 @@ router.post("/save", async (req, res) => {
                 .input("MemberId", sql.UniqueIdentifier, toGuidOrNull(memberId))
                 .input("Amount", sql.Decimal(18, 2), creditAmount)
                 .query(`UPDATE MemberMaster SET CurrentBalance = CurrentBalance + @Amount WHERE MemberId = @MemberId`);
-              
+
               await transaction.request()
                 .input("MemberId", sql.UniqueIdentifier, toGuidOrNull(memberId))
                 .input("SettlementId", sql.UniqueIdentifier, toGuidOrNull(settlementId))
@@ -1859,7 +1871,7 @@ router.post("/save", async (req, res) => {
                 .input("CustomerId", sql.UniqueIdentifier, toGuidOrNull(memberId))
                 .input("Amount", sql.Decimal(18, 2), creditAmount)
                 .query(`UPDATE CreditCustomerMaster SET CurrentBalance = CurrentBalance + @Amount WHERE CustomerId = @CustomerId`);
-              
+
               await transaction.request()
                 .input("MemberId", sql.UniqueIdentifier, toGuidOrNull(memberId))
                 .input("SettlementId", sql.UniqueIdentifier, toGuidOrNull(settlementId))
@@ -1881,7 +1893,7 @@ router.post("/save", async (req, res) => {
         console.log(`[SAVE SALE] Step 5: Inserting Payment Data (PayMode: ${normalizedPayMode})...`);
         console.log(`[TRACE] [${Date.now()}] [SETTLEMENT_SYNC] Order: ${displayOrderId} | Settlement: ${settlementId} | Amount: ${totalAmount} | Mode: ${normalizedPayMode}`);
 
-        const paymodePosition = activePaymodes.find(x => 
+        const paymodePosition = activePaymodes.find(x =>
           String(x.PayMode).trim().toUpperCase() === normalizedPayMode.toUpperCase()
         )?.Position || 1;
 
@@ -1899,22 +1911,23 @@ router.post("/save", async (req, res) => {
             .input("BusinessUnitId", sql.UniqueIdentifier, sanitizeGuid(businessUnitId))
             .input("CreatedBy", sql.UniqueIdentifier, sanitizeGuid(cashierId))
             .input("ModifiedBy", sql.UniqueIdentifier, sanitizeGuid(cashierId))
+            .input("StartDate", sql.DateTime, start_date)
             .query(`
               -- 🛡️ ATOMIC SYNC: Populating both tables in one go for report integrity
               
               -- 1. Current Table (for POS views)
-              INSERT INTO [dbo].[PaymentDetailCur] (PaymentId, RestaurantBillId, BilledFor, PaymentCollectedOn, PaymentType, Paymode, Amount, ReferenceNumber, Remarks, BusinessUnitId, CreatedBy, CreatedOn, ModifiedBy, ModifiedOn)
-              VALUES (@PaymentId, @RestaurantBillId, @BilledFor, GETDATE(), @PaymentType, @Paymode, @Amount, @ReferenceNumber, @Remarks, @BusinessUnitId, @CreatedBy, GETDATE(), @ModifiedBy, GETDATE());
+              INSERT INTO [dbo].[PaymentDetailCur] (PaymentId, RestaurantBillId, BilledFor, PaymentCollectedOn, PaymentType, Paymode, Amount, ReferenceNumber, Remarks, BusinessUnitId, CreatedBy, CreatedOn, ModifiedBy, ModifiedOn,start_date)
+              VALUES (@PaymentId, @RestaurantBillId, @BilledFor, GETDATE(), @PaymentType, @Paymode, @Amount, @ReferenceNumber, @Remarks, @BusinessUnitId, @CreatedBy, GETDATE(), @ModifiedBy, GETDATE(),@StartDate);
 
               -- 2. Master Table (CRITICAL for Backoffice Reports: vw_PaymentDetail)
               INSERT INTO [dbo].[PaymentDetail] (
                 PaymentId, RestaurantBillId, SettlementId, InvoiceId, OrderId, BilledFor, PaymentCollectedOn, 
                 PaymentType, Paymode, Amount, ReferenceNumber, Remarks, BusinessUnitId, 
-                CreatedBy, CreatedOn, ModifiedBy, ModifiedOn, isSettlement
+                CreatedBy, CreatedOn, ModifiedBy, ModifiedOn, isSettlement,start_date
               ) VALUES (
                 @PaymentId, @RestaurantBillId, @RestaurantBillId, @RestaurantBillId, @PaymentOrderId, @BilledFor, GETDATE(), 
                 @PaymentType, @Paymode, @Amount, @ReferenceNumber, @Remarks, @BusinessUnitId, 
-                @CreatedBy, GETDATE(), @ModifiedBy, GETDATE(), 1
+                @CreatedBy, GETDATE(), @ModifiedBy, GETDATE(), 1,@StartDate
               );
             `);
           console.log(`[SAVE SALE] PaymentDetail Sync Success. Rows affected: ${payResult.rowsAffected.join(', ')}`);
@@ -1986,14 +1999,14 @@ router.post("/save", async (req, res) => {
           if (detailId) {
             const qtyPaid = Number(item.qty) || 0;
             console.log(`[SAVE SALE] Split subtract: Item ${item.name} (${detailId}) PaidQty=${qtyPaid}`);
-            
+
             // Concurrency Check: Ensure sufficient quantity (prevents double-tap issues)
             const qtyCheck = await transaction.request()
               .input("detailId", sql.UniqueIdentifier, detailId)
               .query("SELECT Quantity FROM RestaurantOrderDetailCur WITH (UPDLOCK) WHERE OrderDetailId = @detailId");
-              
+
             if (qtyCheck.recordset.length === 0 || qtyCheck.recordset[0].Quantity < qtyPaid) {
-               throw new Error(`Insufficient quantity available for split item ${item.name}. Transaction aborted.`);
+              throw new Error(`Insufficient quantity available for split item ${item.name}. Transaction aborted.`);
             }
 
             // Subtract quantity from detail record
@@ -2174,7 +2187,7 @@ router.post("/save", async (req, res) => {
       if (tableId) {
         const cleanTableId = String(tableId).replace(/^\{|\}$/g, "").trim();
         const validTableGuid = toGuidOrNull(cleanTableId);
-        
+
         if (isSplit && hasRemaining) {
           console.log(`[SAVE SALE] Split bill partial payment. Remaining Total: ${remainingTotal}`);
           if (validTableGuid) {
@@ -2196,7 +2209,7 @@ router.post("/save", async (req, res) => {
           await transaction.request()
             .input("cartId", sql.NVarChar(128), cleanTableId)
             .query("DELETE FROM [dbo].[CartItems] WHERE [CartId] = @cartId");
-            
+
           if (validTableGuid) {
             await transaction.request()
               .input("tid", sql.UniqueIdentifier, validTableGuid)
@@ -2229,7 +2242,7 @@ router.post("/save", async (req, res) => {
                 const childSection = sectionMap[String(childTable.DiningSection)] || "SECTION_1";
 
                 console.log(`[SAVE SALE] Cleaning up merged source table: ${childTableNo} (${childTableId})`);
-                
+
                 await transaction.request()
                   .input("cartId", sql.NVarChar(128), childTableId)
                   .query("DELETE FROM [dbo].[CartItems] WHERE [CartId] = @cartId");
@@ -2239,9 +2252,9 @@ router.post("/save", async (req, res) => {
                   .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableId = @tid");
 
                 if (io) {
-                  io.emit("table_status_updated", { 
-                    tableId: childTableId.toLowerCase(), 
-                    status: 0, 
+                  io.emit("table_status_updated", {
+                    tableId: childTableId.toLowerCase(),
+                    status: 0,
                     totalAmount: 0,
                     startTime: null,
                     tableNo: childTableNo,
@@ -2307,7 +2320,7 @@ router.post("/save", async (req, res) => {
         }
       });
     }
-    
+
     if (isMemberPayment && memberId) {
       setImmediate(async () => {
         try {
@@ -2352,7 +2365,7 @@ router.get("/settlement/:id", async (req, res) => {
       .query(`
         SELECT TOP 1
           sh.SettlementID,
-          sh.LastSettlementDate AS SettlementDate,
+          sh.start_date AS SettlementDate,
           sh.BillNo AS OrderId,
           sh.OrderType,
           sh.TableNo,
@@ -2394,7 +2407,7 @@ router.get("/settlement/:id", async (req, res) => {
     const itemsResult = await pool.request()
       .input("SettlementId", sql.UniqueIdentifier, settlementId)
       .query("SELECT * FROM SettlementItemDetail WHERE SettlementID = @SettlementId");
-    
+
     const items = itemsResult.recordset || [];
 
     if (items.length > 0 && masterOrderId) {
@@ -2410,7 +2423,7 @@ router.get("/settlement/:id", async (req, res) => {
           FROM RestaurantmodifierdetailCur 
           WHERE OrderId = @OrderId
         `);
-      
+
       const modifiers = modifiersResult.recordset || [];
 
       // Group modifiers into their parent items
@@ -2451,8 +2464,8 @@ router.get("/settlement/:id", async (req, res) => {
     const activePaymodes = paymodesRes.recordset || [];
 
     const payments = (paymentsResult.recordset || []).map(p => {
-      const pmInfo = activePaymodes.find(x => 
-        x.Position === Number(p.payMode) || 
+      const pmInfo = activePaymodes.find(x =>
+        x.Position === Number(p.payMode) ||
         String(x.PayMode).trim().toUpperCase() === String(p.payMode || "").trim().toUpperCase() ||
         String(x.Description).trim().toUpperCase() === String(p.payMode || "").trim().toUpperCase()
       );
@@ -2488,28 +2501,28 @@ router.get("/orders/check/:orderId", async (req, res) => {
 });
 
 router.post("/orders/validate-cancel", async (req, res) => {
-    try {
-      const { settlementId } = req.body;
-      const pool = await poolPromise;
-      
-      const result = await pool.request()
-        .input("Id", settlementId)
-        .query("SELECT IsCancelled FROM SettlementHeader WHERE SettlementID = @Id");
-      
-      if (result.recordset.length === 0) return res.status(404).json({ valid: false, message: "Order not found" });
-      if (result.recordset[0].IsCancelled) return res.status(400).json({ valid: false, message: "Order is already cancelled" });
-      
-      res.json({ valid: true });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+  try {
+    const { settlementId } = req.body;
+    const pool = await poolPromise;
+
+    const result = await pool.request()
+      .input("Id", settlementId)
+      .query("SELECT IsCancelled FROM SettlementHeader WHERE SettlementID = @Id");
+
+    if (result.recordset.length === 0) return res.status(404).json({ valid: false, message: "Order not found" });
+    if (result.recordset[0].IsCancelled) return res.status(400).json({ valid: false, message: "Order is already cancelled" });
+
+    res.json({ valid: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.get("/payment-history", async (req, res) => {
-    try {
-      const pool = await poolPromise;
-      const limit = parseInt(req.query.limit) || 50;
-      const result = await pool.request().input("Limit", sql.Int, limit).query(`
+  try {
+    const pool = await poolPromise;
+    const limit = parseInt(req.query.limit) || 50;
+    const result = await pool.request().input("Limit", sql.Int, limit).query(`
         SELECT TOP (@Limit) CAST(pdc.PaymentId AS VARCHAR(50)) as paymentId,
         CONVERT(VARCHAR(23), pdc.PaymentCollectedOn, 126) as paymentCollectedOn,
         ISNULL(pdc.Amount, 0) as amount, ISNULL(pm.Description, '') as payModeDescription
@@ -2517,18 +2530,18 @@ router.get("/payment-history", async (req, res) => {
         LEFT JOIN [dbo].[Paymode] pm ON pm.Position = pdc.Paymode
         ORDER BY pdc.PaymentCollectedOn DESC
       `);
-      res.json(result.recordset || []);
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+    res.json(result.recordset || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // routes/sales.js
 
 router.get("/payment-methods", async (req, res) => {
-    try {
-      const pool = await poolPromise;
-      const result = await pool.request().query(`
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
         SELECT 
           PayMode       as payMode,
           Description   as description,
@@ -2544,23 +2557,23 @@ router.get("/payment-methods", async (req, res) => {
         FROM [dbo].[Paymode] 
         ORDER BY Position ASC
       `);
-      res.json(result.recordset || []);
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+    res.json(result.recordset || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Kept for backward compatibility — all fields now also returned by /payment-methods above.
 router.get("/payment-detail/:payMode", async (req, res) => {
-    try {
-      const pool = await poolPromise;
-      const result = await pool.request()
-        .input("PayMode", req.params.payMode)
-        .query("SELECT * FROM [dbo].[Paymode] WHERE LTRIM(RTRIM(PayMode)) = @PayMode AND Active = 1");
-      res.json(result.recordset[0] || null);
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input("PayMode", req.params.payMode)
+      .query("SELECT * FROM [dbo].[Paymode] WHERE LTRIM(RTRIM(PayMode)) = @PayMode AND Active = 1");
+    res.json(result.recordset[0] || null);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /**
@@ -2575,7 +2588,7 @@ router.get("/consolidated-report/pdf", async (req, res) => {
     }
 
     const filter = normalizeReportFilter(req.query.filter || 'daily');
-    
+
     // Resolve start and end dates relative to target date (or today in SGT)
     const targetDateStr = req.query.date || new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Singapore' });
     const targetDate = new Date(targetDateStr);
@@ -2746,7 +2759,7 @@ async function logLoyaltyVisitAsync(pool, settlementId, billNo, phone, name, ite
         const dishId = String(item.DishId || item.dishId || item.id || "");
         if (!dishId) continue;
         const key = dishId.toLowerCase();
-        
+
         const providedGroupId = item.DishGroupId || item.dishGroupId || item.groupId;
         if (providedGroupId) {
           itemGroupIdMap[key] = String(providedGroupId).toLowerCase();
@@ -2769,7 +2782,7 @@ async function logLoyaltyVisitAsync(pool, settlementId, billNo, phone, name, ite
             SELECT DishId, DishGroupId FROM DishMaster 
             WHERE DishId IN (${paramNames.join(",")})
           `);
-          
+
           (dishDetailsRes.recordset || []).forEach(row => {
             if (row.DishId && row.DishGroupId) {
               itemGroupIdMap[String(row.DishId).toLowerCase()] = String(row.DishGroupId).toLowerCase();
@@ -2856,7 +2869,7 @@ async function logLoyaltyVisitAsync(pool, settlementId, billNo, phone, name, ite
               SELECT CurrentCount FROM CustomerDishLoyaltyState WITH (UPDLOCK)
               WHERE CustomerId = @CustomerId AND RuleId = @RuleId
             `);
-          
+
           let currentBalance = 0;
           if (stateRes.recordset.length > 0) {
             currentBalance = stateRes.recordset[0].CurrentCount || 0;
@@ -2927,7 +2940,7 @@ async function logLoyaltyVisitAsync(pool, settlementId, billNo, phone, name, ite
           const loyaltyType = rule.LoyaltyType || "Dish";
           const rulePurchaseIdLower = rule.PurchaseDishId ? String(rule.PurchaseDishId).toLowerCase() : null;
           const ruleGroupIdLower = rule.PurchaseDishGroupId ? String(rule.PurchaseDishGroupId).toLowerCase() : null;
-          
+
           let purchaseQty = 0;
           for (const item of itemsList) {
             const itemDishIdLower = String(item.DishId || item.dishId || item.id || "").toLowerCase();

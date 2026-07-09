@@ -345,4 +345,21 @@ router.post("/sync-kitchens", async (req, res) => {
   }
 });
 
+// 🔹 DELETE DateEntry (Dayend Close)
+router.post("/delete-date", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+
+    await pool.request().query("DELETE FROM DateEntry");
+
+    res.json({
+      success: true,
+      message: "DateEntry records deleted successfully"
+    });
+  } catch (err) {
+    console.error("Delete DateEntry error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

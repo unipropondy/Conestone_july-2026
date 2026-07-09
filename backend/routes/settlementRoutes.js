@@ -365,8 +365,8 @@ router.post('/save-denominations', authenticateToken, async (req, res) => {
 
           const dateValue = date ? '@targetDate' : 'GETDATE()';
           await insertReq.query(`
-            INSERT INTO OpeningCashDenomination (CurrencyValue, NoteCount, Type, CreatedBy, CreatedOn, ScreenType)
-            VALUES (@value, @count, @recordType, @createdBy, ${dateValue}, @screenType)
+            INSERT INTO OpeningCashDenomination (CurrencyValue, NoteCount, Type, CreatedBy, CreatedOn, ScreenType, Start_Date)
+            VALUES (@value, @count, @recordType, @createdBy, ${dateValue}, @screenType, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))
           `);
         }
       }
@@ -449,11 +449,11 @@ router.get('/cash-out/:terminal', authenticateToken, async (req, res) => {
     const pool = getPool();
     const request = pool.request();
 
-    let dateFilter = "CAST(CashOutDate as DATE) = CAST(GETDATE() as DATE)";
+    let dateFilter = "CAST(Start_Date as DATE) = CAST(GETDATE() as DATE)";
     if (fromDate && toDate) {
       request.input("fromDate", sql.Date, new Date(fromDate));
       request.input("toDate", sql.Date, new Date(toDate));
-      dateFilter = "CAST(CashOutDate as DATE) BETWEEN @fromDate AND @toDate";
+      dateFilter = "CAST(Start_Date as DATE) BETWEEN @fromDate AND @toDate";
     }
 
     let query = `
@@ -485,11 +485,11 @@ router.get('/cash-in/:terminal', authenticateToken, async (req, res) => {
     const pool = getPool();
     const request = pool.request();
 
-    let dateFilter = "CAST(CashInDate as DATE) = CAST(GETDATE() as DATE)";
+    let dateFilter = "CAST(Start_Date as DATE) = CAST(GETDATE() as DATE)";
     if (fromDate && toDate) {
       request.input("fromDate", sql.Date, new Date(fromDate));
       request.input("toDate", sql.Date, new Date(toDate));
-      dateFilter = "CAST(CashInDate as DATE) BETWEEN @fromDate AND @toDate";
+      dateFilter = "CAST(Start_Date as DATE) BETWEEN @fromDate AND @toDate";
     }
 
     let query = `
@@ -635,9 +635,9 @@ router.post('/cash-out', authenticateToken, async (req, res) => {
       .input('CreatedBy', sql.VarChar, createdBy)
       .input('targetDate', sql.Date, targetDate)
       .query(`
-        INSERT INTO CashOutEntry (CashOutNo, CashOutDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn)
+        INSERT INTO CashOutEntry (CashOutNo, CashOutDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, Start_Date)
         OUTPUT inserted.*
-        VALUES (@CashOutNo, @targetDate, @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, @targetDate)
+        VALUES (@CashOutNo, @targetDate, @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, @targetDate, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))
       `);
 
     res.json({ success: true, data: result.recordset[0] });
@@ -780,11 +780,11 @@ router.post('/artist-cashbox', authenticateToken, async (req, res) => {
           INSERT INTO SettlementHeader (
             SettlementID, LastSettlementDate, LastDayEndDate, SubTotal, TotalTax, DiscountAmount, 
             DiscountType, BillNo, OrderType, TableNo, Section, SysAmount, ManualAmount, 
-            CreatedBy, CreatedOn, VoidItemQty, VoidItemAmount, RoundedBy, ServiceCharge, IsCancelled
+            CreatedBy, CreatedOn, VoidItemQty, VoidItemAmount, RoundedBy, ServiceCharge, IsCancelled, Start_Date
           ) VALUES (
             @SettlementID, GETDATE(), GETDATE(), @Amount, 0, 0, 
             'AMOUNT', @BillNo, 'CASHBOX', 'CASHBOX', 'CASHBOX', @Amount, @Amount, 
-            @UserId, GETDATE(), 0, 0, 0, 0, 0
+            @UserId, GETDATE(), 0, 0, 0, 0, 0, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
           )
         `);
       console.log('[CASHBOX] STEP 3 OK');
@@ -807,11 +807,11 @@ router.post('/artist-cashbox', authenticateToken, async (req, res) => {
           INSERT INTO SettlementItemDetail (
             SettlementID, DishId, DishGroupId, CategoryId, SubCategoryId,
             DishName, CategoryName, SubCategoryName,
-            Qty, Price, OrderDateTime, Status
+            Qty, Price, OrderDateTime, Status, Start_Date
           ) VALUES (
             @SettlementID, @DishId, @DishGroupId, @CategoryId, @SubCategoryId,
             @DishName, @CategoryName, @SubCategoryName,
-            @Qty, @Price, GETDATE(), @Status
+            @Qty, @Price, GETDATE(), @Status, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
           )
         `);
       console.log('[CASHBOX] STEP 4 OK');
@@ -852,18 +852,18 @@ router.post('/artist-cashbox', authenticateToken, async (req, res) => {
         .query(`
           INSERT INTO PaymentDetailCur (
             PaymentId, RestaurantBillId, BilledFor, PaymentCollectedOn, 
-            PaymentType, Paymode, Amount, Remarks, BusinessUnitId, CreatedBy, CreatedOn, ModifiedBy, ModifiedOn
+            PaymentType, Paymode, Amount, Remarks, BusinessUnitId, CreatedBy, CreatedOn, ModifiedBy, ModifiedOn, Start_Date
           ) VALUES (
             @PaymentId, @SettlementID, 1, GETDATE(), 
-            1, 1, @Amount, 'Cash Box Entry', @BizId, @UserId, GETDATE(), @UserId, GETDATE()
+            1, 1, @Amount, 'Cash Box Entry', @BizId, @UserId, GETDATE(), @UserId, GETDATE(), (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
           );
 
           INSERT INTO PaymentDetail (
             PaymentId, RestaurantBillId, SettlementId, InvoiceId, BilledFor, PaymentCollectedOn, 
-            PaymentType, Paymode, Amount, Remarks, BusinessUnitId, CreatedBy, CreatedOn, ModifiedBy, ModifiedOn, isSettlement
+            PaymentType, Paymode, Amount, Remarks, BusinessUnitId, CreatedBy, CreatedOn, ModifiedBy, ModifiedOn, isSettlement, Start_Date
           ) VALUES (
             @PaymentId, @SettlementID, @SettlementID, @SettlementID, 1, GETDATE(), 
-            1, 1, @Amount, 'Cash Box Entry', @BizId, @UserId, GETDATE(), @UserId, GETDATE(), 1
+            1, 1, @Amount, 'Cash Box Entry', @BizId, @UserId, GETDATE(), @UserId, GETDATE(), 1, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
           );
         `);
       console.log('[CASHBOX] STEP 7 OK');

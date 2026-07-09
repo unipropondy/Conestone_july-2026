@@ -114,8 +114,8 @@ router.post('/log', authenticateToken, async (req, res) => {
           .input('TerminalCode', sql.VarChar(50), finalTerminalCode)
           .input('CreatedBy', sql.VarChar(100), cashierName)
           .query(`
-            INSERT INTO CashOutEntry (CashOutNo, CashOutDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn)
-            VALUES (@CashOutNo, CAST(GETDATE() AS DATE), @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, GETDATE())
+            INSERT INTO CashOutEntry (CashOutNo, CashOutDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, Start_Date)
+            VALUES (@CashOutNo, CAST(GETDATE() AS DATE), @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, GETDATE(), (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))
           `);
       } else if (actionType === 'OPENING_FLOAT' && amount > 0) {
         // Update settlement opening totals
@@ -146,8 +146,8 @@ router.post('/log', authenticateToken, async (req, res) => {
             AND Type = 'OPEN'
             AND (ScreenType = 'CB' OR ScreenType IS NULL);
 
-            INSERT INTO OpeningCashDenomination (CurrencyValue, NoteCount, Type, CreatedBy, CreatedOn, ScreenType)
-            VALUES (@value, 1, 'OPEN', @createdBy, GETDATE(), 'CB');
+            INSERT INTO OpeningCashDenomination (CurrencyValue, NoteCount, Type, CreatedBy, CreatedOn, ScreenType, Start_Date)
+            VALUES (@value, 1, 'OPEN', @createdBy, GETDATE(), 'CB', (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC));
           `);
       }
     }

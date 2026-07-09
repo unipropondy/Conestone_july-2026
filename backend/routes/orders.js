@@ -336,7 +336,7 @@ async function syncToProfessionalTables(
       .input("pax", sql.Int, tablePax)
       .input("customerName", sql.NVarChar, tableCustomerName)
       .query(
-        "INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode, IsTakeAway, Pax, CustomerName) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority, @isTakeaway, @pax, @customerName)",
+        "INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode, IsTakeAway, Pax, CustomerName, Start_Date) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority, @isTakeaway, @pax, @customerName, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))",
       );
   }
 
@@ -546,8 +546,8 @@ async function syncToProfessionalTables(
       END
       ELSE
       BEGIN
-        INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName,SongName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, BaseAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, ComboDetailsJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime, DiscountAmount, DiscountType, ServiceCharge)
-        VALUES (@${p_id}, @orderId, @${p_dish}, @${p_name}, @${p_name}, @${p_song}, @${p_qty}, @${p_cost}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_status}, @userId, CASE WHEN @${p_status} = 2 THEN GETDATE() ELSE @${p_created} END, @${p_mods}, @${p_combo}, @orderNo, @${p_note}, @${p_tw}, @bizId, GETDATE(), @${p_disc}, @${p_disctype}, @${p_sc});
+        INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName,SongName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, BaseAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, ComboDetailsJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime, DiscountAmount, DiscountType, ServiceCharge, Start_Date)
+        VALUES (@${p_id}, @orderId, @${p_dish}, @${p_name}, @${p_name}, @${p_song}, @${p_qty}, @${p_cost}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_status}, @userId, CASE WHEN @${p_status} = 2 THEN GETDATE() ELSE @${p_created} END, @${p_mods}, @${p_combo}, @orderNo, @${p_note}, @${p_tw}, @bizId, GETDATE(), @${p_disc}, @${p_disctype}, @${p_sc}, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC));
       END
 
       -- Sync Modifiers for Item ${idx}
@@ -564,7 +564,6 @@ async function syncToProfessionalTables(
       });
 
     if (modItems.length > 0) {
-      batchSql += `INSERT INTO RestaurantmodifierdetailCur (OrderDetailId, OrderId, DishId, ModifierId, Quantity, Amount, ModifierName, CreatedBy, CreatedOn) VALUES `;
       modItems.forEach((mod, midx) => {
         const pm_id = `mId${idx}_${midx}`,
           pm_qty = `mQty${idx}_${midx}`,
@@ -582,10 +581,10 @@ async function syncToProfessionalTables(
         itemRequest.input(pm_amt, sql.Decimal(18, 2), mod.Price || 0);
         itemRequest.input(
           pm_name,
-          sql.NVarChar(800),
-          (mod.ModifierName || "").substring(0, 800),
+          sql.NVarChar(255),
+          mod.ModifierName,
         );
-        batchSql += `(@${p_id}, @orderId, @${p_dish}, @${pm_id}, @${pm_qty}, @${pm_amt}, @${pm_name}, @userId, GETDATE())${midx === modItems.length - 1 ? ";" : ","}`;
+        batchSql += `INSERT INTO RestaurantmodifierdetailCur (OrderDetailId, OrderId, DishId, ModifierId, Quantity, Amount, ModifierName, CreatedBy, CreatedOn, Start_Date) VALUES (@${p_id}, @orderId, @${p_dish}, @${pm_id}, @${pm_qty}, @${pm_amt}, @${pm_name}, @userId, GETDATE(), (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC));\n`;
       });
     }
   });
@@ -1251,12 +1250,12 @@ router.post("/cancel", async (req, res) => {
             SettlementID, LastSettlementDate, BillNo, OrderType, TableNo, Section, 
             CashierID, BusinessUnitId, SysAmount, ManualAmount, CreatedBy, CreatedOn, 
             IsCancelled, CancellationReason, CancelledDate, CancelledByUserName, 
-            SubTotal, TotalTax, DiscountAmount, MobileNo, VoidItemQty, VoidItemAmount
+            SubTotal, TotalTax, DiscountAmount, MobileNo, VoidItemQty, VoidItemAmount, Start_Date
           ) VALUES (
             @sid, GETDATE(), @oid, 'DINE-IN', @tableNo, @section, 
             @userId, @bizId, 0, 0, @userId, GETDATE(), 
             1, @reason, GETDATE(), @userName, 
-            @subTotal, 0, 0, @mobile, @voidQty, @voidAmt
+            @subTotal, 0, 0, @mobile, @voidQty, @voidAmt, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
           )
         `);
 
@@ -1275,10 +1274,10 @@ router.post("/cancel", async (req, res) => {
           .input("groupName", sql.NVarChar(255), item.DishGroupName).query(`
             INSERT INTO SettlementItemDetail (
               SettlementID, DishId, DishName,SongName, Qty, Price, Status, OrderDateTime,
-              CategoryId, CategoryName, SubCategoryName
+              CategoryId, CategoryName, SubCategoryName, Start_Date
             ) VALUES (
               @sid, @dishId, @dishName,  @songName,@qty, @price, 'VOIDED', GETDATE(),
-              @catId, @catName, @groupName
+              @catId, @catName, @groupName, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
             )
           `);
       }
@@ -1313,12 +1312,12 @@ router.post("/cancel", async (req, res) => {
             BusinessUnitId, RestaurantBillId, OrderId, BillNumber, OrderDateTime, TimeBilled, 
             TotalLineItemAmount, TotalTax, DiscountAmount, TotalAmount, StatusCode, 
             CreatedBy, CreatedOn, InvoiceDate, ServiceCharge, RoundedBy, TotalAmountLessFreight,
-            PaymentTermCode
+            PaymentTermCode, Start_Date
           ) VALUES (
             @bizId, @sid, @sid, @oid, GETDATE(), GETDATE(),
             @subTotal, 0, 0, 0, 4,
             @userId, GETDATE(), CAST(GETDATE() AS DATE), 0, 0, @subTotal,
-            0
+            0, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
           );
         `);
 

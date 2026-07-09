@@ -30,6 +30,7 @@ import { formatToSingaporeTime } from "../../utils/timezoneHelper";
 
 import StoreSettingsModal from "@/components/payment/StoreSettingsModal";
 import GeneralSettingsModal from "@/components/settings/GeneralSettingsModal";
+import CalendarPicker from "@/components/CalendarPicker";
 import { useActiveOrdersStore } from "@/stores/activeOrdersStore";
 import { useAuthStore } from "@/stores/authStore";
 import {
@@ -416,6 +417,55 @@ export default function Category() {
   const [isQRModalVisible, setIsQRModalVisible] = useState(false);
   const sectionScrollRef = useRef<ScrollView>(null);
 
+  const [showDateModal, setShowDateModal] = useState(false);
+  const [selectedDateEntry, setSelectedDateEntry] = useState("");
+  const [isSavingDateEntry, setIsSavingDateEntry] = useState(false);
+
+  const fetchDateEntry = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/date-entry/get-date`);
+      const data = await response.json();
+      if (data.date) {
+        const dateStr = typeof data.date === "string" ? data.date.split("T")[0] : data.date;
+        setSelectedDateEntry(dateStr);
+      } else {
+        setSelectedDateEntry("");
+      }
+    } catch (error) {
+      console.error("Fetch Date Error:", error);
+    }
+  };
+
+  const handleSaveDateEntry = async () => {
+    if (!selectedDateEntry) {
+      Alert.alert("Error", "Please select a date first.");
+      return;
+    }
+    setIsSavingDateEntry(true);
+    try {
+      const { user: currentUser } = useAuthStore.getState();
+      const response = await fetch(`${API_URL}/api/date-entry/save-date`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ startDate: selectedDateEntry, username: currentUser?.userName }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        showToast({ message: "Date saved successfully!", type: "success" });
+      } else {
+        Alert.alert("Error", data.message || "Failed to save date");
+      }
+    } catch (error) {
+      console.error("Save Date Error:", error);
+      Alert.alert("Error", "Network error while saving date");
+    } finally {
+      setIsSavingDateEntry(false);
+      setShowDateModal(false);
+    }
+  };
+
   // Customer guest name + pax modal states
   const [guestModalVisible, setGuestModalVisible] = useState(false);
   const [pendingGuestItem, setPendingGuestItem] = useState<TableItem | null>(
@@ -554,6 +604,7 @@ export default function Category() {
   useEffect(() => {
     // Initial load
     fetchTables();
+    fetchDateEntry();
 
     // Only fetch settings if not already loaded
     usePaymentSettingsStore.getState().fetchSettings();
@@ -630,6 +681,9 @@ export default function Category() {
         // Clear the tracker
         lastGuestOpenedTable = null;
       }
+      
+      // Refresh date entry every time the category page comes into focus
+      fetchDateEntry();
 
       // Re-fetch only if data is likely stale (older than 30s)
       if (Date.now() - lastTablesFetchTime > 30000) {
@@ -1023,6 +1077,15 @@ export default function Category() {
 
   const handleTablePress = React.useCallback(
     async (item: TableItem, tableData: any, isCheckoutAction?: boolean) => {
+      if (!selectedDateEntry) {
+        if (Platform.OS === 'web') {
+          window.alert("Please choose a date before selecting a table.");
+        } else {
+          Alert.alert("Date Required", "Please choose a date before selecting a table.");
+        }
+        return;
+      }
+
       // 🌹 PAID QR TABLE: Block entry — table is paid and waiting for kitchen to serve
       const tablePaymentStatus = (tableData as any)?.paymentStatus !== undefined
         ? Number((tableData as any).paymentStatus)
@@ -1126,7 +1189,7 @@ export default function Category() {
 
       await proceedWithTable(item, tableData);
     },
-    [activeTab, router, isWaiter, enableGuestDetailsPopup],
+    [activeTab, router, isWaiter, enableGuestDetailsPopup, selectedDateEntry],
   );
 
   const proceedWithTable = async (item: TableItem, tableData: any) => {
@@ -1304,7 +1367,7 @@ export default function Category() {
           />
         </View>
         <TableGridSkeleton
-          itemSize={itemSize}
+      itemSize={itemSize}
           columns={columns}
           gap={GAP}
           padding={PADDING}
@@ -1409,6 +1472,25 @@ export default function Category() {
 
         {/* RIGHT — Action Buttons */}
         <View style={[styles.navRightGroup, { gap: isTablet ? 8 : 6 }]}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginRight: 8 }}>
+            <TouchableOpacity
+              onPress={() => setShowDateModal(true)}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: "#d1d5db",
+                backgroundColor: "#fff",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              <Ionicons name="calendar-outline" size={16} color={Theme.textPrimary} />
+              <Text style={{color: Theme.textPrimary, fontSize: 14}}>{selectedDateEntry || "Select Date"}</Text>
+            </TouchableOpacity>
+          </View>
           {/* Kitchen Status — moved from menu */}
           {enableKDS && (
             <TouchableOpacity
@@ -2393,6 +2475,52 @@ export default function Category() {
           <Ionicons name="sparkles" size={24} color="#fff" />
         </TouchableOpacity>
       )}
+
+      {/* Date Picker Modal */}
+      <Modal
+        visible={showDateModal}
+        transparent
+        onRequestClose={() => setShowDateModal(false)}
+      >
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
+          <View style={{ width: 320, backgroundColor: Theme.bgCard, borderRadius: 20, padding: 16 }}>
+             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <Text style={{ fontSize: 16, fontFamily: Fonts.bold, color: Theme.textPrimary }}>Select Date</Text>
+                <TouchableOpacity onPress={() => setShowDateModal(false)}>
+                  <Ionicons name="close" size={24} color={Theme.textPrimary} />
+                </TouchableOpacity>
+             </View>
+             <CalendarPicker
+               selectedDate={selectedDateEntry || new Date().toISOString().split('T')[0]}
+               onDateChange={(date) => {
+                 setSelectedDateEntry(date);
+               }}
+               isRangeMode={false}
+               minDate={new Date()}
+               maxDate={new Date()}
+             />
+             
+             <TouchableOpacity
+              onPress={handleSaveDateEntry}
+              disabled={isSavingDateEntry}
+              style={{
+                backgroundColor: Theme.primary,
+                paddingHorizontal: 16,
+                paddingVertical: 12,
+                borderRadius: 8,
+                marginTop: 16,
+                opacity: isSavingDateEntry ? 0.7 : 1,
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 16 }}>
+                {isSavingDateEntry ? "Saving..." : "Save Date"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

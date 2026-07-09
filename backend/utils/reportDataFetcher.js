@@ -27,13 +27,13 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
   // We use the same date range format: LastSettlementDate >= start AND LastSettlementDate < end_day_plus_1
   const sgtStart = `CAST('${startDateStr}' AS DATETIME)`;
   const sgtEnd = `DATEADD(DAY, 1, CAST('${endDateStr}' AS DATETIME))`;
-  const shWhere = `sh.LastSettlementDate >= ${sgtStart} AND sh.LastSettlementDate < ${sgtEnd}`;
+  const shWhere = `sh.start_date >= ${sgtStart} AND sh.start_date < ${sgtEnd}`;
   const cctWhere = `cct.CreatedDate >= ${sgtStart} AND cct.CreatedDate < ${sgtEnd}`;
 
   const salesQuery = `
     SELECT 
       sh.SettlementID, 
-      sh.LastSettlementDate AS SettlementDate, 
+      sh.start_date AS SettlementDate,
       sh.BillNo AS OrderId, 
       sh.OrderType,
       sh.TableNo, 
@@ -161,20 +161,20 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
       totalVoidAmount += s.VoidAmount || 0;
     }
 
-     const rawMode = String(s.RawPayMode || "").toUpperCase().trim();
-     // First pass: try exact match against all database payment modes
-     let matchedMode = allPaymodes.find(pm => {
-       const name = pm.PayMode.toUpperCase().trim();
-       const desc = (pm.Description || pm.PayMode).toUpperCase().trim();
-       return rawMode === name || rawMode === desc;
-     });
+    const rawMode = String(s.RawPayMode || "").toUpperCase().trim();
+    // First pass: try exact match against all database payment modes
+    let matchedMode = allPaymodes.find(pm => {
+      const name = pm.PayMode.toUpperCase().trim();
+      const desc = (pm.Description || pm.PayMode).toUpperCase().trim();
+      return rawMode === name || rawMode === desc;
+    });
 
     // Second pass: if no exact match, try greedy/wildcard match against all database payment modes
     if (!matchedMode) {
       matchedMode = allPaymodes.find(pm => {
         const name = pm.PayMode.toUpperCase().trim();
         if ((name === "PAYNOW" || name === "PAY NOW" || name === "UPI" || name === "GPAY") &&
-            (rawMode.includes("PAYNOW") || rawMode.includes("PAY NOW") || rawMode.includes("UPI") || rawMode.includes("GPAY") || rawMode.includes("PHONE") || rawMode.includes("PAYTM"))) {
+          (rawMode.includes("PAYNOW") || rawMode.includes("PAY NOW") || rawMode.includes("UPI") || rawMode.includes("GPAY") || rawMode.includes("PHONE") || rawMode.includes("PAYTM"))) {
           return true;
         }
         if ((name === "CASH" || name === "CAS") && (rawMode === "CASH" || rawMode === "CAS")) {
@@ -278,7 +278,8 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
       LEFT JOIN DishMaster d ON rod.DishId = d.DishId
       LEFT JOIN DishGroupMaster dg ON d.DishGroupId = dg.DishGroupId
       LEFT JOIN CategoryMaster cm ON dg.CategoryId = cm.CategoryId
-      WHERE ro.OrderDateTime >= ${sgtStart} AND ro.OrderDateTime < ${sgtEnd}
+      WHERE ro.start_date >= ${sgtStart}
+AND ro.start_date < ${sgtEnd}
         AND ISNULL(ro.StatusCode, 0) = 3
         AND NOT EXISTS (
           SELECT 1 FROM SettlementHeader sh_dup 
@@ -364,7 +365,8 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
       LEFT JOIN DishMaster d ON rod.DishId = d.DishId
       LEFT JOIN DishGroupMaster dg ON d.DishGroupId = dg.DishGroupId
       LEFT JOIN CategoryMaster cm ON dg.CategoryId = cm.CategoryId
-      WHERE ro.OrderDateTime >= ${sgtStart} AND ro.OrderDateTime < ${sgtEnd}
+      WHERE ro.start_date >= ${sgtStart}
+AND ro.start_date < ${sgtEnd}
         AND ISNULL(ro.StatusCode, 0) = 3
         AND NOT EXISTS (
           SELECT 1 FROM SettlementHeader sh_dup 
@@ -453,7 +455,7 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
     if (diffDays > 15) {
       step = Math.ceil(diffDays / 15);
     }
-    
+
     for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + step)) {
       const dayKey = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Singapore' });
       const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'Asia/Singapore' });

@@ -21,7 +21,9 @@ const localIP = getLocalBackendIP();
 export const API_URL = __DEV__
   ? `http://${localIP}:3000`
   : (process.env.EXPO_PUBLIC_API_URL ??
-    "https://conestonejuly-2026-production.up.railway.app");
+    "http://localhost:3000"
+    // "https://conestonejuly-2026-production.up.railway.app"
+  );
 
 if (__DEV__) {
   console.log(`🌐 [Config] API_URL: ${API_URL} | Platform: ${Platform.OS}`);
