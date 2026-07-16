@@ -2,10 +2,13 @@ import { API_URL } from "@/constants/Config";
 import { Fonts } from "@/constants/Fonts";
 import { Theme } from "@/constants/theme";
 import { useAuthStore } from "@/stores/authStore";
+import { useGeneralSettingsStore } from "../../stores/generalSettingsStore";
+import { useToast } from "../../components/Toast";
 import { Ionicons } from "@expo/vector-icons";
 import axios from "axios";
 import * as Print from "expo-print";
 import { useRouter } from "expo-router";
+import * as Sharing from "expo-sharing";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -18,11 +21,13 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useToast } from "../../components/Toast";
+import { getSingaporeTimeTodayRange } from "../../utils/timezoneHelper";
+
 
 interface CustomDateTimePickerProps {
   visible: boolean;
@@ -30,16 +35,15 @@ interface CustomDateTimePickerProps {
   selectedDate: Date;
   onApply: (date: Date) => void;
   title: string;
-  mode?: "date" | "datetime";
 }
 
-function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, mode = "datetime" }: CustomDateTimePickerProps) {
+function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title }: CustomDateTimePickerProps) {
   const { width } = useWindowDimensions();
   const isTablet = width >= 640;
 
   const [viewDate, setViewDate] = useState(() => new Date(selectedDate));
   const [selectedDay, setSelectedDay] = useState(() => new Date(selectedDate));
-
+  
   // Time states
   const [hour, setHour] = useState(() => {
     let h = selectedDate.getHours();
@@ -139,15 +143,11 @@ function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, 
 
   const handleApply = () => {
     const finalDate = new Date(selectedDay);
-    if (mode === "datetime") {
-      let finalHours = hour % 12;
-      if (amPm === "PM") {
-        finalHours += 12;
-      }
-      finalDate.setHours(finalHours, minute, 0, 0);
-    } else {
-      finalDate.setHours(0, 0, 0, 0);
+    let finalHours = hour % 12;
+    if (amPm === "PM") {
+      finalHours += 12;
     }
+    finalDate.setHours(finalHours, minute, 0, 0);
     onApply(finalDate);
     onClose();
   };
@@ -156,7 +156,6 @@ function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, 
     const d = selectedDay.getDate().toString().padStart(2, '0');
     const m = (selectedDay.getMonth() + 1).toString().padStart(2, '0');
     const y = selectedDay.getFullYear();
-    if (mode === "date") return `${d}-${m}-${y}`;
     const h = hour.toString().padStart(2, '0');
     const minStr = minute.toString().padStart(2, '0');
     return `${d}-${m}-${y} ${h}:${minStr} ${amPm}`;
@@ -172,12 +171,7 @@ function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={pickerStyles.overlay}>
-        <View style={[
-          pickerStyles.modalContainer,
-          mode === 'date' && isTablet && { width: 380 },
-          mode === 'date' && !isTablet && { width: 360 },
-          !isTablet && { flexDirection: 'column', width: '95%', padding: 16 }
-        ]}>
+        <View style={[pickerStyles.modalContainer, !isTablet && { width: '95%', padding: 16, maxHeight: '90%' }]}>
           {/* Header */}
           <View style={pickerStyles.header}>
             <Text style={pickerStyles.headerTitle}>{title}</Text>
@@ -186,62 +180,66 @@ function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, 
             </TouchableOpacity>
           </View>
 
-          {/* Columns Container */}
-          <View style={{ flexDirection: isTablet ? 'row' : 'column', gap: 20 }}>
-            {/* Left Side: Calendar */}
-            <View style={{ flex: 1 }}>
-              {/* Calendar Navigator */}
-              <View style={pickerStyles.calNavigator}>
-                <TouchableOpacity onPress={prevMonth} style={pickerStyles.navBtn}>
-                  <Ionicons name="chevron-back" size={16} color="#44403C" />
-                </TouchableOpacity>
-                <Text style={pickerStyles.monthYearText}>{monthNames[month]} {year}</Text>
-                <TouchableOpacity onPress={nextMonth} style={pickerStyles.navBtn}>
-                  <Ionicons name="chevron-forward" size={16} color="#44403C" />
-                </TouchableOpacity>
+          <ScrollView 
+            style={{ flexShrink: 1 }} 
+            contentContainerStyle={{ paddingBottom: 10 }}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Columns Container */}
+            <View style={{ flexDirection: isTablet ? 'row' : 'column', gap: 20 }}>
+              {/* Left Side: Calendar */}
+              <View style={{ flex: 1 }}>
+                {/* Calendar Navigator */}
+                <View style={pickerStyles.calNavigator}>
+                  <TouchableOpacity onPress={prevMonth} style={pickerStyles.navBtn}>
+                    <Ionicons name="chevron-back" size={16} color="#44403C" />
+                  </TouchableOpacity>
+                  <Text style={pickerStyles.monthYearText}>{monthNames[month]} {year}</Text>
+                  <TouchableOpacity onPress={nextMonth} style={pickerStyles.navBtn}>
+                    <Ionicons name="chevron-forward" size={16} color="#44403C" />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Weekdays Row */}
+                <View style={pickerStyles.weekdaysRow}>
+                  {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((wd, i) => (
+                    <Text key={i} style={pickerStyles.weekdayText}>{wd}</Text>
+                  ))}
+                </View>
+
+                {/* Days Grid */}
+                <View style={pickerStyles.daysGrid}>
+                  {days.map((dObj, idx) => {
+                    const isSelected = selectedDay.getDate() === dObj.day &&
+                      selectedDay.getMonth() === dObj.month &&
+                      selectedDay.getFullYear() === dObj.year;
+
+                    return (
+                      <TouchableOpacity
+                        key={idx}
+                        onPress={() => handleDaySelect(dObj)}
+                        style={[
+                          pickerStyles.dayBtn,
+                          isSelected && pickerStyles.dayBtnSelected
+                        ]}
+                      >
+                        <Text style={[
+                          pickerStyles.dayText,
+                          !dObj.isCurrentMonth && pickerStyles.dayTextInactive,
+                          isSelected && pickerStyles.dayTextSelected
+                        ]}>
+                          {dObj.day}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
 
-              {/* Weekdays Row */}
-              <View style={pickerStyles.weekdaysRow}>
-                {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((wd, i) => (
-                  <Text key={i} style={pickerStyles.weekdayText}>{wd}</Text>
-                ))}
-              </View>
+              {/* Vertical Divider */}
+              {isTablet && <View style={pickerStyles.verticalDivider} />}
 
-              {/* Days Grid */}
-              <View style={pickerStyles.daysGrid}>
-                {days.map((dObj, idx) => {
-                  const isSelected = selectedDay.getDate() === dObj.day &&
-                    selectedDay.getMonth() === dObj.month &&
-                    selectedDay.getFullYear() === dObj.year;
-
-                  return (
-                    <TouchableOpacity
-                      key={idx}
-                      onPress={() => handleDaySelect(dObj)}
-                      style={[
-                        pickerStyles.dayBtn,
-                        isSelected && pickerStyles.dayBtnSelected
-                      ]}
-                    >
-                      <Text style={[
-                        pickerStyles.dayText,
-                        !dObj.isCurrentMonth && pickerStyles.dayTextInactive,
-                        isSelected && pickerStyles.dayTextSelected
-                      ]}>
-                        {dObj.day}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-
-            {/* Vertical Divider */}
-            {isTablet && mode === "datetime" && <View style={pickerStyles.verticalDivider} />}
-
-            {/* Right Side: Time */}
-            {mode === "datetime" && (
+              {/* Right Side: Time */}
               <View style={[pickerStyles.timePanel, !isTablet && { width: '100%', marginTop: 10 }]}>
                 <Text style={pickerStyles.setTimeTitle}>SET TIME</Text>
 
@@ -252,17 +250,9 @@ function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, 
                     <TouchableOpacity onPress={() => adjustHour(1)} style={pickerStyles.arrowBtn}>
                       <Ionicons name="chevron-up" size={18} color="#44403C" />
                     </TouchableOpacity>
-                    <TextInput
-                      style={[pickerStyles.timeInputBox, { fontSize: 18, fontFamily: Fonts.black, color: Theme.textPrimary, textAlign: 'center' }]}
-                      value={hour.toString().padStart(2, '0')}
-                      onChangeText={(v) => {
-                        const n = parseInt(v.replace(/[^0-9]/g, ''), 10);
-                        if (!isNaN(n) && n >= 1 && n <= 12) setHour(n);
-                      }}
-                      keyboardType="number-pad"
-                      maxLength={2}
-                      selectTextOnFocus
-                    />
+                    <View style={pickerStyles.timeInputBox}>
+                      <Text style={pickerStyles.timeValueText}>{hour.toString().padStart(2, '0')}</Text>
+                    </View>
                     <TouchableOpacity onPress={() => adjustHour(-1)} style={pickerStyles.arrowBtn}>
                       <Ionicons name="chevron-down" size={18} color="#44403C" />
                     </TouchableOpacity>
@@ -277,17 +267,9 @@ function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, 
                     <TouchableOpacity onPress={() => adjustMinute(1)} style={pickerStyles.arrowBtn}>
                       <Ionicons name="chevron-up" size={18} color="#44403C" />
                     </TouchableOpacity>
-                    <TextInput
-                      style={[pickerStyles.timeInputBox, { fontSize: 18, fontFamily: Fonts.black, color: Theme.textPrimary, textAlign: 'center' }]}
-                      value={minute.toString().padStart(2, '0')}
-                      onChangeText={(v) => {
-                        const n = parseInt(v.replace(/[^0-9]/g, ''), 10);
-                        if (!isNaN(n) && n >= 0 && n <= 59) setMinute(n);
-                      }}
-                      keyboardType="number-pad"
-                      maxLength={2}
-                      selectTextOnFocus
-                    />
+                    <View style={pickerStyles.timeInputBox}>
+                      <Text style={pickerStyles.timeValueText}>{minute.toString().padStart(2, '0')}</Text>
+                    </View>
                     <TouchableOpacity onPress={() => adjustMinute(-1)} style={pickerStyles.arrowBtn}>
                       <Ionicons name="chevron-down" size={18} color="#44403C" />
                     </TouchableOpacity>
@@ -296,8 +278,8 @@ function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, 
 
                   {/* AM/PM */}
                   <View style={[pickerStyles.timeBlock, { justifyContent: 'center' }]}>
-                    <TouchableOpacity
-                      onPress={() => setAmPm(prev => prev === "AM" ? "PM" : "AM")}
+                    <TouchableOpacity 
+                      onPress={() => setAmPm(prev => prev === "AM" ? "PM" : "AM")} 
                       style={[pickerStyles.ampmBtn, pickerStyles.ampmBtnActive]}
                     >
                       <Text style={pickerStyles.ampmBtnTextActive}>{amPm}</Text>
@@ -312,8 +294,8 @@ function CustomDateTimePicker({ visible, onClose, selectedDate, onApply, title, 
                   <Text style={pickerStyles.summaryValue}>{formatSummaryStr()}</Text>
                 </View>
               </View>
-            )}
-          </View>
+            </View>
+          </ScrollView>
 
           {/* Footer Actions */}
           <View style={pickerStyles.footer}>
@@ -563,16 +545,63 @@ const pickerStyles = StyleSheet.create({
 
 export default function SettlementScreen() {
   const router = useRouter();
-  const { showToast } = useToast();
   const { user, token } = useAuthStore();
-  const canAccessDayEnd = useAuthStore((s: any) => s.canAccessDayEnd);
   const { width } = useWindowDimensions();
   const isTablet = width >= 768;
+  const enableCashDrawer = useGeneralSettingsStore(state => state.settings.enableCashDrawer);
+  const { showToast } = useToast();
 
   const [loading, setLoading] = useState(false);
   const [terminals, setTerminals] = useState<any[]>([]);
   const [selectedTerminal, setSelectedTerminal] = useState<string>("");
   const [showLov, setShowLov] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+
+  const executeDayEnd = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/settlement/day-end`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          username: user?.userName || "admin"
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const AsyncStorage = require("@react-native-async-storage/async-storage").default;
+        await AsyncStorage.removeItem("selected_business_date");
+        showToast({
+          type: "success",
+          message: "Day Ended Successfully",
+          subtitle: "Report generated and business day closed."
+        });
+        router.replace("/(tabs)/category"); // Go back to Category
+      } else {
+        showToast({
+          type: "error",
+          message: "Day End Failed",
+          subtitle: data.error || "Failed to complete Day End."
+        });
+      }
+    } catch (err) {
+      console.error("Day End Error:", err);
+      showToast({
+        type: "error",
+        message: "Network Error",
+        subtitle: "Failed to connect to the server."
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDayEnd = () => {
+    setShowConfirmModal(true);
+  };
 
   const [totalSales, setTotalSales] = useState<any>({});
   const [payments, setPayments] = useState<any[]>([]);
@@ -591,37 +620,41 @@ export default function SettlementScreen() {
     PaymentMode: 'Cash',
     ReferenceNo: ''
   });
-  const [cashBoxForm, setCashBoxForm] = useState({
-    ArtistName: '',
-    Amount: ''
+
+  // Cash In State
+  const [cashInEntries, setCashInEntries] = useState<any[]>([]);
+  const [showCashInModal, setShowCashInModal] = useState(false);
+  const [cashInForm, setCashInForm] = useState({
+    CashInId: '',
+    Amount: '',
+    Reason: '',
+    Remarks: '',
+    PaymentMode: 'Cash',
+    ReferenceNo: ''
   });
+const [cashBoxForm, setCashBoxForm] = useState({
+  ArtistName: '',
+  Amount: ''
+});
   const [lovMode, setLovMode] = useState<"OPEN" | "CLOSE">("OPEN");
 
   const [openingCash, setOpeningCash] = useState<string>("0");
 
   const [dishList, setDishList] = useState<any[]>([]);
-  const [showDishLov, setShowDishLov] = useState(false);
-  const [artistSearch, setArtistSearch] = useState("");
+const [showDishLov, setShowDishLov] = useState(false);
+const [artistSearch, setArtistSearch] = useState("");
 
   const [fromDate, setFromDate] = useState<Date>(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
+    const { from } = getSingaporeTimeTodayRange();
+    return from;
   });
-  const [toDate, setToDate] = useState<Date>(new Date());
+  const [toDate, setToDate] = useState<Date>(() => {
+    const { to } = getSingaporeTimeTodayRange();
+    return to;
+  });
 
   const [showFromPicker, setShowFromPicker] = useState(false);
   const [showToPicker, setShowToPicker] = useState(false);
-
-  const [showDayendModal, setShowDayendModal] = useState(false);
-  const [showDayendFromPicker, setShowDayendFromPicker] = useState(false);
-  const [showDayendToPicker, setShowDayendToPicker] = useState(false);
-  const [dayendRangeStart, setDayendRangeStart] = useState<Date>(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
-  });
-  const [dayendRangeEnd, setDayendRangeEnd] = useState<Date>(new Date());
 
   const userId = user?.userId || "0";
 
@@ -674,6 +707,7 @@ export default function SettlementScreen() {
   useEffect(() => {
     loadTerminals();
     loadDishes();
+    useGeneralSettingsStore.getState().fetchSettings();
   }, []);
 
   const loadTerminals = async () => {
@@ -695,24 +729,24 @@ export default function SettlementScreen() {
     }
   };
 
-  const loadDishes = async () => {
-    try {
-      const res = await axios.get(
-        `${API_URL}/api/settlement/artist-list`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
+const loadDishes = async () => {
+  try {
+    const res = await axios.get(
+      `${API_URL}/api/settlement/artist-list`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
 
-      console.log("ARTIST DATA =", res.data);
+    console.log("ARTIST DATA =", res.data);
 
-      setDishList(res.data.data || []);
-    } catch (err) {
-      console.log(err);
-    }
-  };
+    setDishList(res.data.data || []);
+  } catch (err) {
+    console.log(err);
+  }
+};
 
   useEffect(() => {
     if (selectedTerminal) fetchData();
@@ -736,12 +770,14 @@ export default function SettlementScreen() {
       const denomsRes = await axios.get(`${API_URL}/api/settlement/denominations?type=OPEN&date=${dateStr}&screenType=CB`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
       const closeDenomsRes = await axios.get(`${API_URL}/api/settlement/denominations?type=CLOSE&date=${dateStr}&screenType=CB`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
       const cashOutRes = await axios.get(`${API_URL}/api/settlement/cash-out/${selectedTerminal}?fromDate=${fromStr}&toDate=${toStr}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
+      const cashInRes = await axios.get(`${API_URL}/api/settlement/cash-in/${selectedTerminal}?fromDate=${fromStr}&toDate=${toStr}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
 
       setTotalSales(totalRes.data || {});
       setPayments(payRes.data || []);
       setTransactions(transRes.data || []);
       setSales(salesRes.data || []);
       setCashOutEntries(cashOutRes.data?.data || []);
+      setCashInEntries(cashInRes.data?.data || []);
 
       if (openRes.data?.data?.total) {
         setOpeningCash(openRes.data.data.total.toString());
@@ -796,23 +832,22 @@ export default function SettlementScreen() {
   const paymentsTotal = payments.reduce((sum, p) => sum + (parseFloat(p.Amount) || 0), 0);
   const displayOpeningAmount = totalOpening > 0 ? totalOpening : (parseFloat(openingCash) || 0);
   const totalCashOut = cashOutEntries.reduce((sum, entry) => sum + (parseFloat(entry.Amount) || 0), 0);
+  const totalCashInEntries = cashInEntries.reduce((sum, entry) => sum + (parseFloat(entry.Amount) || 0), 0);
   const cashBoxTotal = payments
     .filter(p => p.PaymodeName?.toUpperCase().includes("CASH BOX") || p.PaymodeName?.toUpperCase().includes("CASHBOX"))
     .reduce((sum, p) => sum + (parseFloat(p.Amount) || 0), 0);
-
-  const regularPayments = payments.filter(p => !(p.PaymodeName?.toUpperCase().includes("CASH BOX") || p.PaymodeName?.toUpperCase().includes("CASHBOX")));
 
   const baseTransactionsTotal = transactions.reduce((sum, t) => {
     const amt = parseFloat(t.Amount) || 0;
     return sum + (t.TransactionType === "IN" ? amt : -amt);
   }, 0);
 
-  const transactionsTotal = baseTransactionsTotal + displayOpeningAmount - totalCashOut;
+  const transactionsTotal = baseTransactionsTotal + displayOpeningAmount - totalCashOut + totalCashInEntries;
   const salesCash = parseFloat(payments.find(p => p.PaymodeName?.toUpperCase() === 'CASH')?.Amount) || 0;
 
   const sysCash = salesCash + transactionsTotal;
 
-  const totalCashIn = paymentsTotal + displayOpeningAmount + transactions.filter(t => t.TransactionType === "IN").reduce((sum, t) => sum + (parseFloat(t.Amount) || 0), 0);
+  const totalCashIn = salesCash + displayOpeningAmount + totalCashInEntries + transactions.filter(t => t.TransactionType === "IN").reduce((sum, t) => sum + (parseFloat(t.Amount) || 0), 0);
   const totalCashOutSum = totalCashOut + transactions.filter(t => t.TransactionType === "OUT").reduce((sum, t) => sum + (parseFloat(t.Amount) || 0), 0);
 
   const handleFinalize = async () => {
@@ -844,18 +879,7 @@ export default function SettlementScreen() {
       });
 
       if (res.data.success) {
-        // After finalizing settlement, actually close the day by deleting the date entry
-        try {
-          await fetch(`${API_URL}/api/settings/delete-date`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({})
-          });
-        } catch (delErr) {
-          console.warn("Failed to delete date entry after finalize", delErr);
-        }
-
-        Alert.alert("Success", "Settlement finalized and Day Closed successfully!");
+        Alert.alert("Success", "Settlement finalized successfully!");
         router.back();
       } else {
         Alert.alert("Error", res.data.error || "Failed to finalize settlement");
@@ -961,38 +985,80 @@ export default function SettlementScreen() {
     }
   };
 
-  const handleSaveCashBox = async () => {
+  const handleSaveCashIn = async () => {
+    if (!cashInForm.Amount || parseFloat(cashInForm.Amount) <= 0) {
+      Alert.alert("Validation", "Please enter a valid amount");
+      return;
+    }
+
     try {
+      setLoading(true);
+      const payload = {
+        amount: parseFloat(cashInForm.Amount),
+        reason: cashInForm.Reason,
+        remarks: cashInForm.Remarks,
+        paymentMode: cashInForm.PaymentMode,
+        referenceNo: cashInForm.ReferenceNo,
+        terminalCode: selectedTerminal === "ALL" ? "" : selectedTerminal,
+        date: getLocalDateStr(fromDate)
+      };
 
-      await axios.post(
-        `${API_URL}/api/settlement/artist-cashbox`,
-        {
-          ArtistName: cashBoxForm.ArtistName,
-          Amount: parseFloat(cashBoxForm.Amount)
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        }
-      );
+      let res;
+      if (cashInForm.CashInId) {
+        res = await axios.put(`${API_URL}/api/settlement/cash-in/${cashInForm.CashInId}`, payload, {
+          headers: { Authorization: `Bearer ${useAuthStore.getState().token}` }
+        });
+      } else {
+        res = await axios.post(`${API_URL}/api/settlement/cash-in`, payload, {
+          headers: { Authorization: `Bearer ${useAuthStore.getState().token}` }
+        });
+      }
 
-      Alert.alert("Success", "Cash Box Saved");
-
-      setCashBoxForm({
-        ArtistName: "",
-        Amount: "",
-      });
-
-      setShowCashBoxModal(false);
-      setToDate(new Date()); // Update To Date just like in cash out to ensure new data is caught
-      fetchData(); // Refresh the report data
-
-    } catch (err) {
-      console.log(err);
-      Alert.alert("Error", "Failed to save");
+      if (res.data.success) {
+        setCashInForm({ CashInId: '', Amount: '', Reason: '', Remarks: '', PaymentMode: 'Cash', ReferenceNo: '' });
+        setShowCashInModal(false);
+        setToDate(new Date());
+        fetchData();
+        Alert.alert("Success", "Cash In entry saved");
+      }
+    } catch (err: any) {
+      console.error("❌ SAVE CASH IN ERROR", err);
+      Alert.alert("Error", err.response?.data?.error || "Failed to save cash in entry");
+    } finally {
+      setLoading(false);
     }
   };
+
+  const handleSaveCashBox = async () => {
+  try {
+
+    await axios.post(
+      `${API_URL}/api/settlement/artist-cashbox`,
+      {
+        ArtistName: cashBoxForm.ArtistName,
+        Amount: parseFloat(cashBoxForm.Amount)
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    Alert.alert("Success", "Cash Box Saved");
+
+    setCashBoxForm({
+      ArtistName: "",
+      Amount: "",
+    });
+
+    setShowCashBoxModal(false);
+
+  } catch (err) {
+    console.log(err);
+    Alert.alert("Error", "Failed to save");
+  }
+};
 
   const executeDeleteCashOut = async (id: string) => {
     try {
@@ -1028,7 +1094,41 @@ export default function SettlementScreen() {
     }
   };
 
-  const handlePrintReport = async () => {
+  const executeDeleteCashIn = async (id: string) => {
+    try {
+      setLoading(true);
+      const res = await axios.delete(`${API_URL}/api/settlement/cash-in/${id}`, {
+        headers: { Authorization: `Bearer ${useAuthStore.getState().token}` }
+      });
+      if (res.data.success) {
+        fetchData();
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err.response?.data?.error || "Failed to delete entry");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteCashIn = async (id: string) => {
+    if (!id) {
+      Alert.alert("Error", "Invalid entry ID");
+      return;
+    }
+
+    if (Platform.OS === 'web') {
+      if (window.confirm("Are you sure you want to delete this cash in entry?")) {
+        executeDeleteCashIn(id);
+      }
+    } else {
+      Alert.alert("Confirm", "Are you sure you want to delete this cash in entry?", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: () => executeDeleteCashIn(id) }
+      ]);
+    }
+  };
+
+   const handlePrintReport = async () => {
     try {
       // 1. Fetch Cashier Printer IP from settings
       let cashierIp = "";
@@ -1067,10 +1167,11 @@ export default function SettlementScreen() {
         }
       };
 
-      const fromDateStr = formatDateTime(fromDate).split(' ')[0];
-      const toDateStr = formatDateTime(toDate).split(' ')[0];
+      const fromDateStr = formatDateTime(fromDate);
+      const toDateStr = formatDateTime(toDate);
+      const cashInTotalSum = totalCashInEntries + transactions.filter(t => t.TransactionType === "IN").reduce((sum, t) => sum + (parseFloat(t.Amount) || 0), 0);
 
-      // 2. Format HTML aligned to 80mm width
+      // 2. Format HTML aligned to 80mm width with centered print-out look
       const html = `
         <html>
           <head>
@@ -1079,130 +1180,149 @@ export default function SettlementScreen() {
               * { box-sizing: border-box; }
               body { 
                 font-family: 'Courier New', Courier, monospace; 
-                width: 80mm; 
-                padding: 4mm; 
+                width: 100%; 
                 margin: 0; 
+                padding: 0; 
                 color: #000; 
-                background-color: #fff; 
+                background-color: #f3f4f6; 
+                display: flex;
+                justify-content: center;
+                align-items: flex-start;
                 -webkit-print-color-adjust: exact; print-color-adjust: exact;
-                font-size: 13px;
-                line-height: 1.2;
               }
-              .title { text-align: center; font-size: 16px; font-weight: bold; margin-bottom: 5px; text-transform: uppercase; }
-              .divider { border-bottom: 1px dashed #000; margin: 10px 0; }
-              .double-divider { border-bottom: 2px double #000; margin: 10px 0; }
-              .info-line { margin-bottom: 3px; }
-              table { width: 100%; border-collapse: collapse; margin: 8px 0; }
-              td { padding: 4px 0; font-size: 13px; vertical-align: top; }
+              .report-wrapper {
+                width: 80mm;
+                padding: 6mm;
+                margin: 20px auto;
+                background-color: #fff;
+                box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+                font-size: 13px;
+                line-height: 1.3;
+              }
+              @media print {
+                body {
+                  background-color: #fff;
+                }
+                .report-wrapper {
+                  margin: 0 auto;
+                  box-shadow: none;
+                  padding: 4mm;
+                }
+              }
+              .title { text-align: center; font-size: 16px; font-weight: bold; margin: 5px 0; text-transform: uppercase; }
+              .section-title { text-align: center; font-size: 14px; font-weight: bold; text-transform: uppercase; margin: 5px 0; }
+              .divider { text-align: center; font-weight: bold; margin: 2px 0; }
+              .info-block { margin: 15px 0; font-size: 13px; }
+              .info-row { margin-bottom: 2px; }
+              table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+              td { padding: 3px 0; font-size: 13px; vertical-align: top; }
               .right { text-align: right; }
               .center { text-align: center; }
               .bold { font-weight: bold; }
-              .header-row td { font-weight: bold; text-transform: uppercase; border-bottom: 1px dashed #000; padding-bottom: 5px; }
-              .section-row td { font-weight: bold; padding-top: 10px; padding-bottom: 5px; text-decoration: underline; }
+              .line-divider { border-bottom: 1px dashed #000; margin: 5px 0; }
             </style>
           </head>
           <body>
-            <div class="title">Settlement Report</div>
-            <div class="double-divider"></div>
-            <div class="info-line">Period: ${fromDateStr} to ${toDateStr}</div>
-            ${selectedTerminal !== "ALL" ? `<div class="info-line">Terminal: ${selectedTerminal}</div>` : ""}
-            <div class="info-line">Generated: ${new Date().toLocaleTimeString()}</div>
-            <div class="double-divider"></div>
-
-            <table>
-              <tr class="header-row">
-                <td>Particulars</td>
-                <td class="center" style="width: 15%;">Qty</td>
-                <td class="right" style="width: 35%;">Amount</td>
-              </tr>
+            <div class="report-wrapper">
+              <div class="divider">========================================</div>
+              <div class="title">SETTLEMENT REPORT</div>
+              <div class="divider">========================================</div>
               
-              <tr class="section-row">
-                <td colspan="3">Revenue Summary</td>
-              </tr>
-              <tr>
-                <td>Gross Sales</td>
-                <td class="center">${totalSales.InvoiceCount || '-'}</td>
-                <td class="right">${formatCurrency(totalSales.SubTotal)}</td>
-              </tr>
-              <tr>
-                <td>Total Discount</td>
-                <td class="center">-</td>
-                <td class="right">-${formatCurrency(totalSales.DiscountAmount)}</td>
-              </tr>
-              <tr>
-                <td>Service Charge</td>
-                <td class="center">-</td>
-                <td class="right">${formatCurrency(totalSales.ServiceCharge)}</td>
-              </tr>
-              <tr>
-                <td>Tax Collected (GST)</td>
-                <td class="center">-</td>
-                <td class="right">${formatCurrency(totalSales.TotalTax)}</td>
-              </tr>
-              <tr>
-                <td>Rounding & Excess</td>
-                <td class="center">-</td>
-                <td class="right">${formatCurrency(totalSales.RoundedBy)}</td>
-              </tr>
-              <tr>
-                <td>Tips</td>
-                <td class="center">-</td>
-                <td class="right">${formatCurrency(totalSales.Tips)}</td>
-              </tr>
-              <tr class="bold">
-                <td>Net Sales</td>
-                <td class="center">${totalSales.InvoiceCount || '-'}</td>
-                <td class="right">${formatCurrency(netSales)}</td>
-              </tr>
+              <div class="info-block">
+                <div class="bold">Period:</div>
+                <div class="info-row">${fromDateStr}</div>
+                <div class="info-row">to</div>
+                <div class="info-row">${toDateStr}</div>
+                <br/>
+                <div class="bold">Generated:</div>
+                <div class="info-row">${formatDateTime(new Date())}</div>
+              </div>
 
-              <tr class="section-row">
-                <td colspan="3">Payment Breakdown</td>
-              </tr>
-              <tr>
-                <td>Opening Balance</td>
-                <td class="center">-</td>
-                <td class="right">${formatCurrency(displayOpeningAmount)}</td>
-              </tr>
-              ${payments.map(p => `
+              <div class="divider">========================================</div>
+              <div class="section-title">SALES SUMMARY</div>
+              <div class="divider">========================================</div>
+              <table>
                 <tr>
-                   <td>${p.PaymodeName}</td>
-                   <td class="center">-</td>
-                   <td class="right">${formatCurrency(p.Amount)}</td>
+                  <td>Gross Sales</td>
+                  <td class="right">${formatCurrency(totalSales.SubTotal)}</td>
                 </tr>
-              `).join('')}
-              ${transactions.map(t => `
                 <tr>
-                   <td>${t.TransactionMode} (${t.TransactionType})</td>
-                   <td class="center">-</td>
-                   <td class="right">${t.TransactionType === "IN" ? formatCurrency(t.Amount) : '-' + formatCurrency(t.Amount)}</td>
+                  <td>Discount</td>
+                  <td class="right">${formatCurrency(totalSales.DiscountAmount)}</td>
                 </tr>
-              `).join('')}
-              ${cashOutEntries.map(co => `
                 <tr>
-                   <td>${co.Reason || 'Cash Out'}</td>
-                   <td class="center">-</td>
-                   <td class="right">-${formatCurrency(co.Amount)}</td>
+                  <td>Service Charge</td>
+                  <td class="right">${formatCurrency(totalSales.ServiceCharge)}</td>
                 </tr>
-              `).join('')}
-              <tr class="divider"><td colspan="3"></td></tr>
-              <tr class="bold">
-                <td>Total Collected (In)</td>
-                <td class="center">-</td>
-                <td class="right">${formatCurrency(totalCashIn)}</td>
-              </tr>
-              <tr class="bold">
-                <td>Total Withdrawn (Out)</td>
-                <td class="center">-</td>
-                <td class="right">-${formatCurrency(totalCashOutSum)}</td>
-              </tr>
-              <tr class="bold" style="font-size: 14px;">
-                <td>Net Total in Drawer</td>
-                <td class="center">-</td>
-                <td class="right">${formatCurrency(totalCashIn - totalCashOutSum)}</td>
-              </tr>
-            </table>
-            <div class="double-divider"></div>
-            <div class="center" style="font-size: 11px; margin-top: 15px;">SMART-POS BY UNIPROSG</div>
+                <tr>
+                  <td>GST Collected</td>
+                  <td class="right">${formatCurrency(totalSales.TotalTax)}</td>
+                </tr>
+                <tr>
+                  <td>Tips</td>
+                  <td class="right">${formatCurrency(totalSales.Tips)}</td>
+                </tr>
+                <tr>
+                  <td colspan="2"><div class="line-divider"></div></td>
+                </tr>
+                <tr class="bold">
+                  <td>NET SALES</td>
+                  <td class="right">${formatCurrency(netSales)}</td>
+                </tr>
+              </table>
+
+              <div class="divider">========================================</div>
+              <div class="section-title">PAYMENT COLLECTION</div>
+              <div class="divider">========================================</div>
+              <table>
+                ${payments.map(p => `
+                  <tr>
+                    <td>${p.PaymodeName}</td>
+                    <td class="right">${formatCurrency(p.Amount)}</td>
+                  </tr>
+                `).join('')}
+                <tr>
+                  <td colspan="2"><div class="line-divider"></div></td>
+                </tr>
+                <tr class="bold">
+                  <td>TOTAL COLLECTION</td>
+                  <td class="right">${formatCurrency(paymentsTotal)}</td>
+                </tr>
+              </table>
+
+              <div class="divider">========================================</div>
+              <div class="section-title">CASH DRAWER SUMMARY</div>
+              <div class="divider">========================================</div>
+              <table>
+                <tr>
+                  <td>Opening Float</td>
+                  <td class="right">${formatCurrency(displayOpeningAmount)}</td>
+                </tr>
+                <tr>
+                  <td>Cash Sales</td>
+                  <td class="right">${formatCurrency(salesCash)}</td>
+                </tr>
+                <tr>
+                  <td>Cash In</td>
+                  <td class="right">${formatCurrency(cashInTotalSum)}</td>
+                </tr>
+                <tr>
+                  <td>Cash Out</td>
+                  <td class="right">${formatCurrency(totalCashOutSum)}</td>
+                </tr>
+                <tr>
+                  <td colspan="2"><div class="line-divider"></div></td>
+                </tr>
+                <tr class="bold">
+                  <td>EXPECTED CASH</td>
+                  <td class="right">${formatCurrency(totalCashIn - totalCashOutSum)}</td>
+                </tr>
+              </table>
+
+              <div class="divider">========================================</div>
+              <div class="center bold" style="font-size: 11px; margin-top: 10px; text-transform: uppercase;">SMART-POS BY UNIPROSG</div>
+              <div class="divider">========================================</div>
+            </div>
           </body>
         </html>
       `;
@@ -1224,46 +1344,48 @@ export default function SettlementScreen() {
               return spaceCount > 0 ? `${left}${" ".repeat(spaceCount)}${right}\n` : `${left}\n${right.padStart(48, " ")}\n`;
             };
 
-            let text = "[C]================================================\n";
+            let text = "[C]========================================\n";
             text += "[C]<font size='big'><B>SETTLEMENT REPORT</B></font>\n";
-            text += "[C]================================================\n";
-            text += `[C]Period: ${fromDateStr} to ${toDateStr}\n`;
-            if (selectedTerminal !== "ALL") text += `[C]Terminal: ${selectedTerminal}\n`;
-            text += `[C]Generated: ${new Date().toLocaleTimeString()}\n`;
-            text += "[C]------------------------------------------------\n\n";
+            text += "[C]========================================\n\n";
+            text += "[L]<B>Period:</B>\n";
+            text += `[L]${fromDateStr}\n`;
+            text += "[L]to\n";
+            text += `[L]${toDateStr}\n\n`;
+            text += "[L]<B>Generated:</B>\n";
+            text += `[L]${formatDateTime(new Date())}\n\n`;
 
-            text += "[L]<B>REVENUE SUMMARY</B>\n";
-            text += "[L]------------------------------------------------\n";
-            text += formatTwoCols48("Gross Sales (" + (totalSales.InvoiceCount || 0) + "):", formatCurrency(totalSales.SubTotal));
-            text += formatTwoCols48("Total Discount:", "-" + formatCurrency(totalSales.DiscountAmount));
+            text += "[C]========================================\n";
+            text += "[C]<B>SALES SUMMARY</B>\n";
+            text += "[C]========================================\n";
+            text += formatTwoCols48("Gross Sales:", formatCurrency(totalSales.SubTotal));
+            text += formatTwoCols48("Discount:", formatCurrency(totalSales.DiscountAmount));
             text += formatTwoCols48("Service Charge:", formatCurrency(totalSales.ServiceCharge));
-            text += formatTwoCols48("Tax Collected (GST):", formatCurrency(totalSales.TotalTax));
-            text += formatTwoCols48("Rounding & Excess:", formatCurrency(totalSales.RoundedBy));
+            text += formatTwoCols48("GST Collected:", formatCurrency(totalSales.TotalTax));
             text += formatTwoCols48("Tips:", formatCurrency(totalSales.Tips));
-            text += "[L]------------------------------------------------\n";
-            text += formatTwoCols48("<B>Net Sales:</B>", "<B>" + formatCurrency(netSales) + "</B>");
-            text += "[L]------------------------------------------------\n\n";
+            text += "[L]----------------------------------------\n";
+            text += formatTwoCols48("<B>NET SALES:</B>", "<B>" + formatCurrency(netSales) + "</B>\n");
 
-            text += "[L]<B>PAYMENT BREAKDOWN</B>\n";
-            text += "[L]------------------------------------------------\n";
-            text += formatTwoCols48("Opening Balance:", formatCurrency(displayOpeningAmount));
+            text += "[C]========================================\n";
+            text += "[C]<B>PAYMENT COLLECTION</B>\n";
+            text += "[C]========================================\n";
             payments.forEach(p => {
               text += formatTwoCols48(p.PaymodeName + ":", formatCurrency(p.Amount));
             });
-            transactions.forEach(t => {
-              const sign = t.TransactionType === "IN" ? "" : "-";
-              text += formatTwoCols48(t.TransactionMode + " (" + t.TransactionType + "):", sign + formatCurrency(t.Amount));
-            });
-            cashOutEntries.forEach(co => {
-              text += formatTwoCols48((co.Reason || "Cash Out") + ":", "-" + formatCurrency(co.Amount));
-            });
-            text += "[L]------------------------------------------------\n";
-            text += formatTwoCols48("<B>Total Collected (In):</B>", "<B>" + formatCurrency(totalCashIn) + "</B>");
-            text += formatTwoCols48("<B>Total Withdrawn (Out):</B>", "<B>-" + formatCurrency(totalCashOutSum) + "</B>");
-            text += "[L]------------------------------------------------\n";
-            text += formatTwoCols48("<font size='big'><B>Net Total in Drawer:</B></font>", "<font size='big'><B>" + formatCurrency(totalCashIn - totalCashOutSum) + "</B></font>");
-            text += "[C]================================================\n";
-            text += "[C]SMART-POS BY UNIPROSG\n\n\n\n";
+            text += "[L]----------------------------------------\n";
+            text += formatTwoCols48("<B>TOTAL COLLECTION:</B>", "<B>" + formatCurrency(paymentsTotal) + "</B>\n");
+
+            text += "[C]========================================\n";
+            text += "[C]<B>CASH DRAWER SUMMARY</B>\n";
+            text += "[C]========================================\n";
+            text += formatTwoCols48("Opening Float:", formatCurrency(displayOpeningAmount));
+            text += formatTwoCols48("Cash Sales:", formatCurrency(salesCash));
+            text += formatTwoCols48("Cash In:", formatCurrency(cashInTotalSum));
+            text += formatTwoCols48("Cash Out:", formatCurrency(totalCashOutSum));
+            text += "[L]----------------------------------------\n";
+            text += formatTwoCols48("<font size='big'><B>EXPECTED CASH:</B></font>", "<font size='big'><B>" + formatCurrency(totalCashIn - totalCashOutSum) + "</B></font>\n");
+            text += "[C]========================================\n";
+            text += "[C]SMART-POS BY UNIPROSG\n";
+            text += "[C]========================================\n\n\n\n";
 
             const ThermalPrinter = require("react-native-thermal-printer").default;
             await ThermalPrinter.printTcp({
@@ -1289,56 +1411,60 @@ export default function SettlementScreen() {
             await SunmiModule.initPrinter();
             await SunmiModule.lineWrap(1);
             await SunmiModule.printText("================================\n");
-
+            
             if (SunmiModule.setFontSize) await SunmiModule.setFontSize(32);
-            await SunmiModule.printText("  SETTLEMENT REPORT\n");
+            await SunmiModule.printText("     SETTLEMENT REPORT\n");
             if (SunmiModule.setFontSize) await SunmiModule.setFontSize(24);
-            await SunmiModule.printText("================================\n");
-
-            await SunmiModule.printText(`Period: ${fromDateStr} to ${toDateStr}\n`);
-            if (selectedTerminal !== "ALL") await SunmiModule.printText(`Terminal: ${selectedTerminal}\n`);
-            await SunmiModule.printText(`Generated: ${new Date().toLocaleTimeString()}\n`);
-            await SunmiModule.printText("--------------------------------\n");
+            await SunmiModule.printText("================================\n\n");
+            
+            await SunmiModule.printText("Period:\n");
+            await SunmiModule.printText(`${fromDateStr}\n`);
+            await SunmiModule.printText("to\n");
+            await SunmiModule.printText(`${toDateStr}\n\n`);
+            await SunmiModule.printText("Generated:\n");
+            await SunmiModule.printText(`${formatDateTime(new Date())}\n\n`);
 
             const formatTwoCols32 = (left: string, right: string) => {
               const spaceCount = 32 - left.length - right.length;
               return spaceCount > 0 ? `${left}${" ".repeat(spaceCount)}${right}\n` : `${left}\n${right.padStart(32, " ")}\n`;
             };
 
-            await SunmiModule.printText("REVENUE SUMMARY\n");
-            await SunmiModule.printText("--------------------------------\n");
-            await SunmiModule.printText(formatTwoCols32("Gross Sales (" + (totalSales.InvoiceCount || 0) + "):", formatCurrency(totalSales.SubTotal)));
-            await SunmiModule.printText(formatTwoCols32("Total Discount:", "-" + formatCurrency(totalSales.DiscountAmount)));
+            await SunmiModule.printText("================================\n");
+            await SunmiModule.printText("         SALES SUMMARY\n");
+            await SunmiModule.printText("================================\n");
+            await SunmiModule.printText(formatTwoCols32("Gross Sales:", formatCurrency(totalSales.SubTotal)));
+            await SunmiModule.printText(formatTwoCols32("Discount:", formatCurrency(totalSales.DiscountAmount)));
             await SunmiModule.printText(formatTwoCols32("Service Charge:", formatCurrency(totalSales.ServiceCharge)));
-            await SunmiModule.printText(formatTwoCols32("Tax Collected (GST):", formatCurrency(totalSales.TotalTax)));
-            await SunmiModule.printText(formatTwoCols32("Rounding & Excess:", formatCurrency(totalSales.RoundedBy)));
+            await SunmiModule.printText(formatTwoCols32("GST Collected:", formatCurrency(totalSales.TotalTax)));
             await SunmiModule.printText(formatTwoCols32("Tips:", formatCurrency(totalSales.Tips)));
             await SunmiModule.printText("--------------------------------\n");
-            await SunmiModule.printText(formatTwoCols32("Net Sales:", formatCurrency(netSales)));
-            await SunmiModule.printText("--------------------------------\n\n");
+            await SunmiModule.printText(formatTwoCols32("NET SALES:", formatCurrency(netSales)));
+            await SunmiModule.printText("\n");
 
-            await SunmiModule.printText("PAYMENT BREAKDOWN\n");
-            await SunmiModule.printText("--------------------------------\n");
-            await SunmiModule.printText(formatTwoCols32("Opening Balance:", formatCurrency(displayOpeningAmount)));
+            await SunmiModule.printText("================================\n");
+            await SunmiModule.printText("       PAYMENT COLLECTION\n");
+            await SunmiModule.printText("================================\n");
             for (const p of payments) {
               await SunmiModule.printText(formatTwoCols32(p.PaymodeName + ":", formatCurrency(p.Amount)));
             }
-            for (const t of transactions) {
-              const sign = t.TransactionType === "IN" ? "" : "-";
-              await SunmiModule.printText(formatTwoCols32(t.TransactionMode + " (" + t.TransactionType + "):", sign + formatCurrency(t.Amount)));
-            }
-            for (const co of cashOutEntries) {
-              await SunmiModule.printText(formatTwoCols32((co.Reason || "Cash Out") + ":", "-" + formatCurrency(co.Amount)));
-            }
             await SunmiModule.printText("--------------------------------\n");
-            await SunmiModule.printText(formatTwoCols32("Total Collected (In):", formatCurrency(totalCashIn)));
-            await SunmiModule.printText(formatTwoCols32("Total Withdrawn (Out):", "-" + formatCurrency(totalCashOutSum)));
+            await SunmiModule.printText(formatTwoCols32("TOTAL COLLECTION:", formatCurrency(paymentsTotal)));
+            await SunmiModule.printText("\n");
+
+            await SunmiModule.printText("================================\n");
+            await SunmiModule.printText("      CASH DRAWER SUMMARY\n");
+            await SunmiModule.printText("================================\n");
+            await SunmiModule.printText(formatTwoCols32("Opening Float:", formatCurrency(displayOpeningAmount)));
+            await SunmiModule.printText(formatTwoCols32("Cash Sales:", formatCurrency(salesCash)));
+            await SunmiModule.printText(formatTwoCols32("Cash In:", formatCurrency(cashInTotalSum)));
+            await SunmiModule.printText(formatTwoCols32("Cash Out:", formatCurrency(totalCashOutSum)));
             await SunmiModule.printText("--------------------------------\n");
             if (SunmiModule.setFontSize) await SunmiModule.setFontSize(28);
-            await SunmiModule.printText(formatTwoCols32("Net in Drawer:", formatCurrency(totalCashIn - totalCashOutSum)));
+            await SunmiModule.printText(formatTwoCols32("EXPECTED CASH:", formatCurrency(totalCashIn - totalCashOutSum)));
             if (SunmiModule.setFontSize) await SunmiModule.setFontSize(24);
             await SunmiModule.printText("================================\n");
             await SunmiModule.printText("     SMART-POS BY UNIPROSG\n");
+            await SunmiModule.printText("================================\n");
             await SunmiModule.lineWrap(3);
             await SunmiModule.cutPaper();
             printedToHardware = true;
@@ -1382,14 +1508,14 @@ export default function SettlementScreen() {
       <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
         <View style={[styles.header, !isTablet && { flexDirection: 'column', alignItems: 'stretch', gap: 12, paddingVertical: 12 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            <TouchableOpacity onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/category" as any)} style={styles.backBtn}>
+            <TouchableOpacity onPress={() => router.replace("/(tabs)/category" as any)} style={styles.backBtn}>
               <Ionicons name="chevron-back" size={20} color={Theme.textPrimary} />
             </TouchableOpacity>
 
             <Text style={styles.headerTitle}>Settlement</Text>
 
             {!isTablet && (
-              <View style={{ marginLeft: 'auto', flexDirection: 'row', gap: 6 }}>
+              <View style={{ marginLeft: 'auto', flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                 <TouchableOpacity
                   style={[styles.confirmBtn, { paddingVertical: 6, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 6 }]}
                   onPress={handlePrintReport}
@@ -1398,27 +1524,42 @@ export default function SettlementScreen() {
                   <Text style={[styles.confirmBtnText, { fontSize: 12 }]}>Print</Text>
                 </TouchableOpacity>
 
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: "#ef4444",
+                    paddingVertical: 6,
+                    paddingHorizontal: 12,
+                    borderRadius: 10,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6
+                  }}
+                  onPress={handleDayEnd}
+                >
+                  <Ionicons name="moon-outline" size={16} color="#fff" />
+                  <Text style={{ color: "#fff", fontFamily: Fonts.black, fontSize: 12 }}>Day End</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
 
           {/* Date Pickers */}
           <View style={
-            isTablet
+            isTablet 
               ? { marginLeft: 'auto', flexDirection: 'row', gap: 20, alignItems: 'center', marginRight: 20 }
               : { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }
           }>
             <View style={{ flex: !isTablet ? 1 : undefined, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text style={{ fontSize: 12, color: Theme.textSecondary, fontFamily: Fonts.medium }}>From:</Text>
               <TouchableOpacity
-                style={{
+                style={{ 
                   flex: !isTablet ? 1 : undefined,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  backgroundColor: '#fff',
-                  borderWidth: 1.5,
-                  borderColor: Theme.border,
-                  borderRadius: 10,
+                  flexDirection: 'row', 
+                  alignItems: 'center', 
+                  backgroundColor: '#fff', 
+                  borderWidth: 1.5, 
+                  borderColor: Theme.border, 
+                  borderRadius: 10, 
                   paddingHorizontal: 8,
                   height: 38,
                   gap: 6,
@@ -1433,7 +1574,7 @@ export default function SettlementScreen() {
                 onPress={() => setShowFromPicker(true)}
               >
                 <Text style={{ fontFamily: Fonts.bold, color: Theme.textPrimary, fontSize: 11, flexShrink: 1 }} numberOfLines={1}>
-                  {formatDateTime(fromDate).split(' ')[0]}
+                  {formatDateTime(fromDate)}
                 </Text>
                 <Ionicons name="calendar-outline" size={13} color="#6B7280" />
               </TouchableOpacity>
@@ -1442,14 +1583,14 @@ export default function SettlementScreen() {
             <View style={{ flex: !isTablet ? 1 : undefined, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text style={{ fontSize: 12, color: Theme.textSecondary, fontFamily: Fonts.medium }}>To:</Text>
               <TouchableOpacity
-                style={{
+                style={{ 
                   flex: !isTablet ? 1 : undefined,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  backgroundColor: '#fff',
-                  borderWidth: 1.5,
-                  borderColor: Theme.border,
-                  borderRadius: 10,
+                  flexDirection: 'row', 
+                  alignItems: 'center', 
+                  backgroundColor: '#fff', 
+                  borderWidth: 1.5, 
+                  borderColor: Theme.border, 
+                  borderRadius: 10, 
                   paddingHorizontal: 8,
                   height: 38,
                   gap: 6,
@@ -1464,7 +1605,7 @@ export default function SettlementScreen() {
                 onPress={() => setShowToPicker(true)}
               >
                 <Text style={{ fontFamily: Fonts.bold, color: Theme.textPrimary, fontSize: 11, flexShrink: 1 }} numberOfLines={1}>
-                  {formatDateTime(toDate).split(' ')[0]}
+                  {formatDateTime(toDate)}
                 </Text>
                 <Ionicons name="calendar-outline" size={13} color="#6B7280" />
               </TouchableOpacity>
@@ -1475,81 +1616,59 @@ export default function SettlementScreen() {
               onClose={() => setShowFromPicker(false)}
               selectedDate={fromDate}
               onApply={(date) => setFromDate(date)}
-              title="Select Start Date"
-              mode="date"
+              title="Select Start Date & Time"
             />
             <CustomDateTimePicker
               visible={showToPicker}
               onClose={() => setShowToPicker(false)}
               selectedDate={toDate}
               onApply={(date) => setToDate(date)}
-              title="Select End Date"
-              mode="date"
+              title="Select End Date & Time"
             />
           </View>
 
-          <View style={{ flexDirection: 'row', gap: 10, marginTop: isTablet ? 0 : 10, width: isTablet ? 'auto' : '100%', justifyContent: isTablet ? 'flex-end' : 'space-between' }}>
-            <TouchableOpacity
-              style={[styles.confirmBtn, { paddingVertical: 8, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 6 }]}
-              onPress={handlePrintReport}
-            >
-              <Ionicons name="print-outline" size={18} color="#fff" />
-              <Text style={styles.confirmBtnText}>Print Report</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={async () => {
-                if (!dayendRangeStart) {
-                  showToast({ type: "error", message: "Please select a date first" });
-                  return;
-                }
+          {isTablet && (
+            <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+              <TouchableOpacity
+                style={[styles.confirmBtn, { backgroundColor: Theme.primary, paddingVertical: 8, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 6 }]}
+                onPress={() => router.push("/menu/rewardMaster")}
+              >
+                <Ionicons name="gift-outline" size={18} color="#fff" />
+                <Text style={styles.confirmBtnText}>Rewards</Text>
+              </TouchableOpacity>
 
-                const performClose = async () => {
-                  try {
-                    const res = await fetch(`${API_URL}/api/settings/delete-date`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({})
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                      showToast({ type: "success", message: "DayEnd Close Successfully" });
-                      setShowDayendModal(false);
-                    } else {
-                      showToast({ type: "error", message: data.error || "Failed to perform DayEnd Close" });
-                    }
-                  } catch (err) {
-                    showToast({ type: "error", message: "Network error" });
-                  }
-                };
+              <TouchableOpacity
+                style={[styles.confirmBtn, { paddingVertical: 8, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 6 }]}
+                onPress={handlePrintReport}
+              >
+                <Ionicons name="print-outline" size={18} color="#fff" />
+                <Text style={styles.confirmBtnText}>Print Report</Text>
+              </TouchableOpacity>
 
-                if (Platform.OS === 'web') {
-                  if (window.confirm("Are you sure you want to perform the Dayend Close?")) {
-                    performClose();
-                  }
-                } else {
-                  Alert.alert(
-                    "Confirm Dayend Close",
-                    "Are you sure you want to perform the Dayend Close?",
-                    [
-                      { text: "No", style: "cancel" },
-                      { text: "Yes", onPress: performClose }
-                    ]
-                  );
-                }
-              }}
-              activeOpacity={0.8}
-              style={[styles.confirmBtn, { backgroundColor: '#DC2626', paddingVertical: 8, paddingHorizontal: 16, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, opacity: !dayendRangeStart ? 0.5 : 1 }]}
-            >
-              <Text style={styles.confirmBtnText}>Dayend Close</Text>
-            </TouchableOpacity>
-            {/* <TouchableOpacity
-              style={[styles.confirmBtn, { paddingVertical: 8, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ea580c' }]}
-              onPress={() => setShowDayendModal(true)}
-            >
-              <Ionicons name="document-text" size={18} color="#fff" />
-              <Text style={styles.confirmBtnText}>Perform Dayend</Text>
-            </TouchableOpacity> */}
-          </View>
+              <TouchableOpacity
+                style={{
+                  backgroundColor: "#ef4444",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  paddingVertical: 8,
+                  paddingHorizontal: 16,
+                  borderRadius: 10,
+                  shadowColor: "#000",
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.1,
+                  shadowRadius: 3,
+                  elevation: 2,
+                  height: 38
+                }}
+                onPress={handleDayEnd}
+              >
+                <Ionicons name="moon-outline" size={18} color="#fff" />
+                <Text style={{ color: "#fff", fontSize: 13, fontFamily: Fonts.black }}>Day End</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
 
         {loading ? (
@@ -1562,54 +1681,76 @@ export default function SettlementScreen() {
             {/* Top Overview Cards */}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 15 }}>
               <TouchableOpacity
-                style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1 }]}
+                style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.bgInput, borderColor: Theme.borderStrong, borderWidth: 1 }]}
                 onPress={() => {
                   setLovMode("OPEN");
                   setShowLov(true);
                 }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="wallet-outline" size={isTablet ? 16 : 14} color="#3B82F6" />
-                  <Text style={{ fontFamily: Fonts.bold, color: '#1E3A8A', fontSize: isTablet ? 12 : 11 }}>Opening Amount</Text>
+                  <Ionicons name="wallet-outline" size={isTablet ? 16 : 14} color={Theme.textSecondary} />
+                  <Text style={{ fontFamily: Fonts.bold, color: Theme.textSecondary, fontSize: isTablet ? 12 : 11 }}>Opening Amount</Text>
                 </View>
-                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: '#1D4ED8', marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(displayOpeningAmount)}</Text>
+                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: Theme.textPrimary, marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(displayOpeningAmount)}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FEF2F2', borderColor: '#FECACA', borderWidth: 1 }]}
-                onPress={() => setShowCashOutModal(true)}
+                style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.successBg, borderColor: Theme.successBorder, borderWidth: 1 }]}
+                onPress={() => {
+                  if (enableCashDrawer) {
+                    Alert.alert("Locked", "Manual Cash In entry is disabled when Cash Drawer is ON.");
+                    return;
+                  }
+                  setShowCashInModal(true);
+                }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="remove-circle-outline" size={isTablet ? 16 : 14} color="#EF4444" />
-                  <Text style={{ fontFamily: Fonts.bold, color: '#991B1B', fontSize: isTablet ? 12 : 11 }}>Cash Out</Text>
+                  <Ionicons name="add-circle-outline" size={isTablet ? 16 : 14} color={Theme.success} />
+                  <Text style={{ fontFamily: Fonts.bold, color: Theme.success, fontSize: isTablet ? 12 : 11 }}>Cash In</Text>
                 </View>
-                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: '#B91C1C', marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(totalCashOut)}</Text>
+                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: Theme.success, marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(totalCashInEntries)}</Text>
               </TouchableOpacity>
 
-
-              <View style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F0FDF4', borderColor: '#BBF7D0', borderWidth: 1 }]}>
+              <TouchableOpacity
+                style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.dangerBg, borderColor: Theme.dangerBorder, borderWidth: 1 }]}
+                onPress={() => {
+                  if (enableCashDrawer) {
+                    Alert.alert("Locked", "Manual Cash Out entry is disabled when Cash Drawer is ON.");
+                    return;
+                  }
+                  setShowCashOutModal(true);
+                }}
+              >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="trending-up-outline" size={isTablet ? 16 : 14} color="#10B981" />
-                  <Text style={{ fontFamily: Fonts.bold, color: '#166534', fontSize: isTablet ? 12 : 11 }}>Net Sales</Text>
+                  <Ionicons name="remove-circle-outline" size={isTablet ? 16 : 14} color={Theme.danger} />
+                  <Text style={{ fontFamily: Fonts.bold, color: Theme.danger, fontSize: isTablet ? 12 : 11 }}>Cash Out</Text>
                 </View>
-                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: '#15803D', marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(netSales)}</Text>
+                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: Theme.danger, marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(totalCashOut)}</Text>
+              </TouchableOpacity>
+
+              <View style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.successBg, borderColor: Theme.successBorder, borderWidth: 1 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="trending-up-outline" size={isTablet ? 16 : 14} color={Theme.success} />
+                  <Text style={{ fontFamily: Fonts.bold, color: Theme.success, fontSize: isTablet ? 12 : 11 }}>Net Sales</Text>
+                </View>
+                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: Theme.success, marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(netSales)}</Text>
               </View>
 
               <TouchableOpacity
-                style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF7ED', borderColor: '#FED7AA', borderWidth: 1 }]}
+                style={[styles.card, { flex: isTablet ? 1 : undefined, minWidth: isTablet ? 0 : '48%', flexGrow: 1, padding: isTablet ? 15 : 10, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.primaryLight, borderColor: Theme.primaryBorder, borderWidth: 1 }]}
                 onPress={() => {
                   setLovMode("CLOSE");
                   setShowLov(true);
                 }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="calculator-outline" size={isTablet ? 16 : 14} color="#F97316" />
-                  <Text style={{ fontFamily: Fonts.bold, color: '#9A3412', fontSize: isTablet ? 12 : 11 }}>Closing Amount</Text>
+                  <Ionicons name="calculator-outline" size={isTablet ? 16 : 14} color={Theme.primary} />
+                  <Text style={{ fontFamily: Fonts.bold, color: Theme.primary, fontSize: isTablet ? 12 : 11 }}>Closing Amount</Text>
                 </View>
-                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: '#C2410C', marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(totalClosing)}</Text>
+                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: Theme.primaryDark, marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(totalClosing)}</Text>
               </TouchableOpacity>
             </View>
-
+            
 
             <View style={[styles.grid, isTablet && styles.gridTablet]}>
               {/* === SUMMARY === */}
@@ -1746,12 +1887,42 @@ export default function SettlementScreen() {
                       </Text>
                     </View>
                   )}
+                  {cashInEntries.map((ci, i) => (
+                    <TouchableOpacity
+                      key={`ci-${i}`}
+                      style={[styles.tableRow, { alignItems: 'center' }]}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        if (enableCashDrawer) {
+                          Alert.alert("Locked", "Manual Cash In entry is disabled when Cash Drawer is ON.");
+                          return;
+                        }
+                        setCashInForm({ ...ci, CashInId: ci.CashInId || ci.cashInId, Amount: ci.Amount?.toString() || '' });
+                        setShowCashInModal(true);
+                      }}
+                    >
+                      <View style={{ flex: 2, flexDirection: 'row', alignItems: 'center' }}>
+                        <Text style={styles.tableCellText}>{ci.Reason || 'Cash In'}</Text>
+                        <Ionicons name="create-outline" size={14} color={Theme.textPrimary} style={{ marginLeft: 6 }} />
+                      </View>
+                      <Text style={[styles.tableCellText, { flex: 1, textAlign: "right", color: Theme.success }]}>
+                        +{formatCurrency(ci.Amount)}
+                      </Text>
+                      <Text style={[styles.tableCellText, { flex: 1, textAlign: "right" }]}>
+                        0.00
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
                   {cashOutEntries.map((co, i) => (
                     <TouchableOpacity
                       key={`co-${i}`}
                       style={[styles.tableRow, { alignItems: 'center' }]}
                       activeOpacity={0.7}
                       onPress={() => {
+                        if (enableCashDrawer) {
+                          Alert.alert("Locked", "Manual Cash Out entry is disabled when Cash Drawer is ON.");
+                          return;
+                        }
                         setCashOutForm({ ...co, CashOutId: co.CashOutId || co.cashOutId, Amount: co.Amount?.toString() || '' });
                         setShowCashOutModal(true);
                       }}
@@ -1779,15 +1950,14 @@ export default function SettlementScreen() {
                       </Text>
                     </View>
                   ))}
-                  {regularPayments.map((p, i) => (
+                  {payments.map((p, i) => (
                     <View key={`pay-${i}`} style={styles.tableRow}>
                       <Text style={[styles.tableCellText, { flex: 2 }]}>{p.PaymodeName}</Text>
                       <Text style={[styles.tableCellText, { flex: 1, textAlign: "right", color: Theme.success }]}>+{formatCurrency(p.Amount)}</Text>
                       <Text style={[styles.tableCellText, { flex: 1, textAlign: "right" }]}></Text>
                     </View>
                   ))}
-
-                  {regularPayments.length === 0 && displayOpeningAmount === 0 && transactions.length === 0 && cashOutEntries.length === 0 && cashBoxTotal === 0 && <Text style={styles.emptyText}>No sales</Text>}
+                  {payments.length === 0 && displayOpeningAmount === 0 && transactions.length === 0 && cashOutEntries.length === 0 && cashInEntries.length === 0 && <Text style={styles.emptyText}>No sales</Text>}
                 </ScrollView>
                 <View style={{ flexDirection: "row", paddingVertical: 12, paddingHorizontal: 12, backgroundColor: "#FAFAFA", borderTopWidth: 1, borderTopColor: Theme.border, alignItems: "center" }}>
                   <View style={{ flex: 2, alignItems: 'flex-end', paddingRight: 15 }}>
@@ -1803,7 +1973,7 @@ export default function SettlementScreen() {
                 <View style={{ flexDirection: "row", paddingVertical: 10, paddingHorizontal: 12, backgroundColor: "#F9FAFB", borderTopWidth: 1, borderTopColor: "#E5E7EB", alignItems: "center" }}>
                   <View style={{ flex: 2, alignItems: 'flex-end', paddingRight: 15 }}>
                     <Text style={{ fontFamily: Fonts.black, fontSize: 13, color: Theme.textSecondary }}>NET AMOUNT</Text>
-                  </View>
+</View>
                   <Text style={{ flex: 2, textAlign: "right", fontFamily: Fonts.black, fontSize: 14, color: (totalCashIn - totalCashOutSum) >= 0 ? Theme.success : Theme.danger }}>
                     {formatCurrency(totalCashIn - totalCashOutSum)}
                   </Text>
@@ -2033,310 +2203,319 @@ export default function SettlementScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Cash In Modal */}
       <Modal
-        visible={showCashBoxModal}
+        visible={showCashInModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowCashBoxModal(false)}
+        onRequestClose={() => setShowCashInModal(false)}
       >
         <View style={styles.modalOverlay}>
           <TouchableOpacity
             style={StyleSheet.absoluteFill}
             activeOpacity={1}
-            onPress={() => setShowCashBoxModal(false)}
+            onPress={() => setShowCashInModal(false)}
           />
-
-          <View style={[styles.modalContent, { maxWidth: 600, width: "90%" }]}>
+          <View style={[styles.modalContent, { maxWidth: 600, width: '90%' }]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Cash Box</Text>
-
-              <TouchableOpacity
-                onPress={() => setShowCashBoxModal(false)}
-                style={styles.modalCloseBtn}
-              >
+              <Text style={styles.modalTitle}>Manage Cash In</Text>
+              <TouchableOpacity onPress={() => setShowCashInModal(false)} style={styles.modalCloseBtn}>
                 <Ionicons name="close" size={20} color={Theme.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <View style={styles.modalDivider} />
 
-            <View style={{ marginBottom: 16 }}>
-              <Text
-                style={{
-                  fontFamily: Fonts.bold,
-                  fontSize: 13,
-                  marginBottom: 6,
-                  color: Theme.textSecondary,
-                }}
-              >
-                Artist Name *
-              </Text>
-              <TouchableOpacity
-                style={[styles.premiumInput, { justifyContent: 'center' }]}
-                onPress={() => setShowDishLov(true)}
-              >
-                <Text style={{ fontFamily: Fonts.medium, color: cashBoxForm.ArtistName ? Theme.textPrimary : Theme.textMuted }}>
-                  {cashBoxForm.ArtistName || "Select Artist"}
-                </Text>
-              </TouchableOpacity>
-            </View>
+            <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ paddingVertical: 5 }} showsVerticalScrollIndicator={false}>
+              {/* List of Today's Cash In */}
+              <View style={{ marginBottom: 15 }}>
+                {cashInEntries.length > 0 ? (
+                  <ScrollView style={{ maxHeight: 150 }} nestedScrollEnabled>
+                    {cashInEntries.map((ci, idx) => (
+                      <View key={idx} style={[styles.tableRow, { alignItems: 'center' }]}>
+                        <Text style={[styles.tableCellText, { flex: 2 }]}>{ci.Reason || 'Cash In'}</Text>
+                        <Text style={[styles.tableCellText, { flex: 1, textAlign: 'right', paddingRight: 15 }]}>{formatCurrency(ci.Amount)}</Text>
+                        <View style={{ flexDirection: 'row', gap: 15, width: 60, justifyContent: 'flex-end' }}>
+                          <TouchableOpacity onPress={() => setCashInForm({ ...ci, CashInId: ci.CashInId || ci.cashInId, Amount: ci.Amount?.toString() || '' })}>
+                            <Ionicons name="create-outline" size={18} color={Theme.primary} />
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => handleDeleteCashIn(ci.CashInId || ci.cashInId)}>
+                            <Ionicons name="trash-outline" size={18} color={Theme.danger} />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ))}
+                  </ScrollView>
+                ) : (
+                  <View style={{ paddingVertical: 15, alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: Theme.border }}>
+                    <Text style={{ fontFamily: Fonts.medium, fontSize: 13, color: Theme.textMuted }}>No cash in entries found for the selected time period.</Text>
+                  </View>
+                )}
+              </View>
 
-            <View style={{ flexDirection: "row", gap: 15, marginBottom: 16 }}>
-              <View style={{ flex: 1 }}>
-                <Text
-                  style={{
-                    fontFamily: Fonts.bold,
-                    fontSize: 13,
-                    marginBottom: 6,
-                    color: Theme.textSecondary,
-                  }}
-                >
-                  Amount *
-                </Text>
+              <View style={{ flexDirection: 'row', gap: 15, marginBottom: 16 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontFamily: Fonts.bold, fontSize: 13, marginBottom: 6, color: Theme.textSecondary }}>Amount *</Text>
+                  <TextInput
+                    style={[styles.premiumInput, { textAlign: 'right', fontSize: 18 }]}
+                    keyboardType="numeric"
+                    value={cashInForm.Amount}
+                    onChangeText={(v) => setCashInForm({ ...cashInForm, Amount: v })}
+                    placeholder="0.00"
+                    placeholderTextColor={Theme.textMuted}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontFamily: Fonts.bold, fontSize: 13, marginBottom: 6, color: Theme.textSecondary }}>Payment Mode</Text>
+                  <TextInput
+                    style={[styles.premiumInput, { fontFamily: Fonts.medium }]}
+                    value={cashInForm.PaymentMode}
+                    onChangeText={(v) => setCashInForm({ ...cashInForm, PaymentMode: v })}
+                    placeholder="Cash"
+                    placeholderTextColor={Theme.textMuted}
+                  />
+                </View>
+              </View>
 
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ fontFamily: Fonts.bold, fontSize: 13, marginBottom: 6, color: Theme.textSecondary }}>Reason</Text>
                 <TextInput
-                  style={[styles.premiumInput, { textAlign: "right", fontSize: 18 }]}
-                  keyboardType="numeric"
-                  value={cashBoxForm.Amount}
-                  onChangeText={(v) =>
-                    setCashBoxForm({ ...cashBoxForm, Amount: v })
-                  }
-                  placeholder="0.00"
+                  style={[styles.premiumInput, { fontFamily: Fonts.medium }]}
+                  value={cashInForm.Reason}
+                  onChangeText={(v) => setCashInForm({ ...cashInForm, Reason: v })}
+                  placeholderTextColor={Theme.textMuted}
                 />
               </View>
-            </View>
+            </ScrollView>
 
-            <TouchableOpacity
-              style={styles.confirmBtn}
-              onPress={handleSaveCashBox}
-            >
-              <Text style={styles.confirmBtnText}>Save</Text>
-            </TouchableOpacity>
+            <View style={[styles.modalFooter, { flexDirection: 'row', gap: 10 }]}>
+              <TouchableOpacity
+                style={[styles.confirmBtn, { flex: 1, backgroundColor: Theme.bgMuted }]}
+                onPress={() => setCashInForm({ CashInId: '', Amount: '', Reason: '', Remarks: '', PaymentMode: 'Cash', ReferenceNo: '' })}
+              >
+                <Text style={[styles.confirmBtnText, { color: Theme.textPrimary }]}>Clear Form</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmBtn, { flex: 1 }]}
+                onPress={handleSaveCashIn}
+              >
+                <Text style={styles.confirmBtnText}>Save</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
 
-      <Modal
-        visible={showDishLov}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setShowDishLov(false);
-          setArtistSearch("");
-        }}
-      >
-        <View style={styles.modalOverlay}>
-          <TouchableOpacity
-            style={StyleSheet.absoluteFill}
-            activeOpacity={1}
-            onPress={() => {
-              setShowDishLov(false);
-              setArtistSearch("");
-            }}
+
+<Modal
+  visible={showDishLov}
+  transparent
+  animationType="fade"
+  onRequestClose={() => {
+    setShowDishLov(false);
+    setArtistSearch("");
+  }}
+>
+  <View style={styles.modalOverlay}>
+    <TouchableOpacity
+      style={StyleSheet.absoluteFill}
+      activeOpacity={1}
+      onPress={() => {
+        setShowDishLov(false);
+        setArtistSearch("");
+      }}
+    />
+    <View style={[styles.modalContent, { maxWidth: 450, width: "90%", padding: 0, overflow: 'hidden' }]}>
+      <View style={[styles.modalHeader, { padding: 16, backgroundColor: Theme.bgCard }]}>
+        <Text style={styles.modalTitle}>Select Artist</Text>
+        <TouchableOpacity
+          onPress={() => {
+            setShowDishLov(false);
+            setArtistSearch("");
+          }}
+          style={styles.modalCloseBtn}
+        >
+          <Ionicons name="close" size={20} color={Theme.textPrimary} />
+        </TouchableOpacity>
+      </View>
+      
+      <View style={{ paddingHorizontal: 16, paddingBottom: 12, backgroundColor: Theme.bgCard, borderBottomWidth: 1, borderBottomColor: Theme.border }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: Theme.bgInput, borderRadius: 8, paddingHorizontal: 12, height: 40, borderWidth: 1, borderColor: Theme.border }}>
+          <Ionicons name="search-outline" size={18} color={Theme.textMuted} />
+          <TextInput
+            style={{ flex: 1, marginLeft: 8, fontFamily: Fonts.medium, fontSize: 14, color: Theme.textPrimary, outlineStyle: 'none' } as any}
+            placeholder="Search artist..."
+            placeholderTextColor={Theme.textMuted}
+            value={artistSearch}
+            onChangeText={setArtistSearch}
           />
-          <View style={[styles.modalContent, { maxWidth: 450, width: "90%", padding: 0, overflow: 'hidden' }]}>
-            <View style={[styles.modalHeader, { padding: 16, backgroundColor: Theme.bgCard }]}>
-              <Text style={styles.modalTitle}>Select Artist</Text>
+          {artistSearch.length > 0 && (
+            <TouchableOpacity onPress={() => setArtistSearch("")}>
+              <Ionicons name="close-circle" size={16} color={Theme.textMuted} />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
+      <ScrollView style={{ maxHeight: 350, backgroundColor: Theme.bgMain }}>
+        {dishList.filter(item => item.Name.toLowerCase().includes(artistSearch.toLowerCase())).length > 0 ? (
+          dishList.filter(item => item.Name.toLowerCase().includes(artistSearch.toLowerCase())).map((item, index) => {
+            const isSelected = cashBoxForm.ArtistName === item.Name;
+            return (
               <TouchableOpacity
+                key={index}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  paddingVertical: 14,
+                  paddingHorizontal: 20,
+                  backgroundColor: isSelected ? Theme.primaryLight : Theme.bgCard,
+                  borderBottomWidth: 1,
+                  borderBottomColor: Theme.border,
+                }}
                 onPress={() => {
+                  setCashBoxForm({
+                    ...cashBoxForm,
+                    ArtistName: item.Name,
+                  });
                   setShowDishLov(false);
                   setArtistSearch("");
                 }}
-                style={styles.modalCloseBtn}
               >
-                <Ionicons name="close" size={20} color={Theme.textPrimary} />
-              </TouchableOpacity>
-            </View>
-
-            <View style={{ paddingHorizontal: 16, paddingBottom: 12, backgroundColor: Theme.bgCard, borderBottomWidth: 1, borderBottomColor: Theme.border }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: Theme.bgInput, borderRadius: 8, paddingHorizontal: 12, height: 40, borderWidth: 1, borderColor: Theme.border }}>
-                <Ionicons name="search-outline" size={18} color={Theme.textMuted} />
-                <TextInput
-                  style={{ flex: 1, marginLeft: 8, fontFamily: Fonts.medium, fontSize: 14, color: Theme.textPrimary, outlineStyle: 'none' } as any}
-                  placeholder="Search artist..."
-                  placeholderTextColor={Theme.textMuted}
-                  value={artistSearch}
-                  onChangeText={setArtistSearch}
-                />
-                {artistSearch.length > 0 && (
-                  <TouchableOpacity onPress={() => setArtistSearch("")}>
-                    <Ionicons name="close-circle" size={16} color={Theme.textMuted} />
-                  </TouchableOpacity>
+                <Text style={{ 
+                  fontFamily: isSelected ? Fonts.bold : Fonts.medium,
+                  fontSize: 14,
+                  color: isSelected ? Theme.primary : Theme.textPrimary 
+                }}>
+                  {item.Name}
+                </Text>
+                {isSelected && (
+                  <Ionicons name="checkmark-circle" size={20} color={Theme.primary} />
                 )}
-              </View>
-            </View>
-
-            <ScrollView style={{ maxHeight: 350, backgroundColor: Theme.bgMain }}>
-              {dishList.filter(item => item.Name.toLowerCase().includes(artistSearch.toLowerCase())).length > 0 ? (
-                dishList.filter(item => item.Name.toLowerCase().includes(artistSearch.toLowerCase())).map((item, index) => {
-                  const isSelected = cashBoxForm.ArtistName === item.Name;
-                  return (
-                    <TouchableOpacity
-                      key={index}
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        paddingVertical: 14,
-                        paddingHorizontal: 20,
-                        backgroundColor: isSelected ? Theme.primaryLight : Theme.bgCard,
-                        borderBottomWidth: 1,
-                        borderBottomColor: Theme.border,
-                      }}
-                      onPress={() => {
-                        setCashBoxForm({
-                          ...cashBoxForm,
-                          ArtistName: item.Name,
-                        });
-                        setShowDishLov(false);
-                        setArtistSearch("");
-                      }}
-                    >
-                      <Text style={{
-                        fontFamily: isSelected ? Fonts.bold : Fonts.medium,
-                        fontSize: 14,
-                        color: isSelected ? Theme.primary : Theme.textPrimary
-                      }}>
-                        {item.Name}
-                      </Text>
-                      {isSelected && (
-                        <Ionicons name="checkmark-circle" size={20} color={Theme.primary} />
-                      )}
-                    </TouchableOpacity>
-                  );
-                })
-              ) : (
-                <View style={{ padding: 30, alignItems: 'center' }}>
-                  <Ionicons name="search-outline" size={32} color={Theme.border} style={{ marginBottom: 10 }} />
-                  <Text style={{ fontFamily: Fonts.medium, color: Theme.textMuted, fontSize: 14 }}>
-                    No artists found matching "{artistSearch}"
-                  </Text>
-                </View>
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={showDayendModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <TouchableOpacity
-            activeOpacity={1}
-            style={styles.modalDismiss}
-            onPress={() => setShowDayendModal(false)}
-          />
-          <View style={[styles.modalContent, { width: isTablet ? 450 : "95%" }]}>
-            <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalTitle}>Dayend Operation</Text>
-                <Text style={{ fontSize: 13, color: Theme.textSecondary, fontFamily: Fonts.medium }}>Select period to close the day</Text>
-              </View>
-              <TouchableOpacity onPress={() => setShowDayendModal(false)} style={styles.modalCloseBtn}>
-                <Ionicons name="close" size={20} color={Theme.textPrimary} />
               </TouchableOpacity>
-            </View>
-
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
-              <View style={{ marginTop: 20, borderWidth: 1, borderColor: '#FED7AA', borderRadius: 12, padding: 16 }}>
-                <Text style={{ fontSize: 11, fontFamily: Fonts.black, color: Theme.textSecondary, marginBottom: 12, letterSpacing: 0.5 }}>SELECT DATE RANGE</Text>
-
-                <View style={{ flexDirection: 'column', gap: 12 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Text style={{ fontSize: 14, color: Theme.textSecondary, fontFamily: Fonts.bold, width: 50 }}>From:</Text>
-                    <TouchableOpacity
-                      style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderWidth: 1, borderColor: '#FED7AA', borderRadius: 10, paddingHorizontal: 12, height: 48, justifyContent: 'space-between' }}
-                      onPress={() => setShowDayendFromPicker(true)}
-                    >
-                      <Text style={{ fontFamily: Fonts.black, color: Theme.textPrimary, fontSize: 14 }}>
-                        {formatDateTime(dayendRangeStart).split(' ')[0]}
-                      </Text>
-                      <Ionicons name="calendar-outline" size={18} color="#F97316" />
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Text style={{ fontSize: 14, color: Theme.textSecondary, fontFamily: Fonts.bold, width: 50 }}>To:</Text>
-                    <TouchableOpacity
-                      style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderWidth: 1, borderColor: '#FED7AA', borderRadius: 10, paddingHorizontal: 12, height: 48, justifyContent: 'space-between' }}
-                      onPress={() => setShowDayendToPicker(true)}
-                    >
-                      <Text style={{ fontFamily: Fonts.black, color: Theme.textPrimary, fontSize: 14 }}>
-                        {formatDateTime(dayendRangeEnd).split(' ')[0]}
-                      </Text>
-                      <Ionicons name="calendar-outline" size={18} color="#F97316" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-
-              <View style={{ marginTop: 20, borderWidth: 1, borderColor: '#F3F4F6', borderRadius: 12, padding: 16 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                  <View style={{ width: 36, height: 36, borderRadius: 8, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center' }}>
-                    <Ionicons name="document-text" size={20} color="#F97316" />
-                  </View>
-                  <View>
-                    <Text style={{ fontSize: 15, fontFamily: Fonts.black, color: Theme.textPrimary }}>Perform Dayend</Text>
-                    <Text style={{ fontSize: 12, fontFamily: Fonts.medium, color: Theme.textSecondary }}>Close the day for selected period</Text>
-                  </View>
-                </View>
-
-                <TouchableOpacity
-                  onPress={() => {
-                    handlePrintReport();
-                    setShowDayendModal(false);
-                  }}
-                  style={{ backgroundColor: '#F97316', height: 48, borderRadius: 10, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, marginBottom: 12 }}
-                >
-                  <Ionicons name="document-text" size={18} color="#fff" />
-                  <Text style={{ color: '#fff', fontFamily: Fonts.black, fontSize: 15 }}>Report</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={async () => {
-                    try {
-                      const res = await fetch(`${API_URL}/api/settings/delete-date`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({})
-                      });
-                      const data = await res.json();
-                      if (data.success) {
-                        showToast({ type: "success", message: "DayEnd Close Successfully" });
-                        setShowDayendModal(false);
-                      } else {
-                        showToast({ type: "error", message: data.error || "Failed to perform DayEnd Close" });
-                      }
-                    } catch (err) {
-                      showToast({ type: "error", message: "Network error" });
-                    }
-                  }}
-                  disabled={!dayendRangeStart}
-                  activeOpacity={0.8}
-                  style={{ backgroundColor: '#DC2626', height: 48, borderRadius: 10, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 }}
-                >
-                  <Text style={{ color: '#fff', fontFamily: Fonts.black, fontSize: 15 }}>Dayend Close</Text>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-
-            <CustomDateTimePicker
-              visible={showDayendFromPicker}
-              onClose={() => setShowDayendFromPicker(false)}
-              selectedDate={dayendRangeStart}
-              onApply={(date) => setDayendRangeStart(date)}
-              title="Select Dayend Start"
-              mode="date"
-            />
-            <CustomDateTimePicker
-              visible={showDayendToPicker}
-              onClose={() => setShowDayendToPicker(false)}
-              selectedDate={dayendRangeEnd}
-              onApply={(date) => setDayendRangeEnd(date)}
-              title="Select Dayend End"
-              mode="date"
-            />
+            );
+          })
+        ) : (
+          <View style={{ padding: 30, alignItems: 'center' }}>
+            <Ionicons name="search-outline" size={32} color={Theme.border} style={{ marginBottom: 10 }} />
+            <Text style={{ fontFamily: Fonts.medium, color: Theme.textMuted, fontSize: 14 }}>
+              No artists found matching "{artistSearch}"
+            </Text>
           </View>
-        </View>
+        )}
+      </ScrollView>
+    </View>
+  </View>
+</Modal>
+
+      {/* CUSTOM CONFIRM DAY END MODAL */}
+      <Modal
+        visible={showConfirmModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowConfirmModal(false)}
+      >
+        <TouchableOpacity 
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.6)",
+            justifyContent: "center",
+            alignItems: "center",
+            padding: 20
+          }}
+          activeOpacity={1}
+          onPress={() => setShowConfirmModal(false)}
+        >
+          <TouchableWithoutFeedback>
+            <View 
+              style={{
+                width: "100%",
+                maxWidth: 420,
+                backgroundColor: Theme.bgCard || "#ffffff",
+                borderRadius: 24,
+                padding: 24,
+                alignItems: "center",
+                shadowColor: "#000",
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.15,
+                shadowRadius: 12,
+                elevation: 5
+              }}
+            >
+              <View style={{
+                width: 56,
+                height: 56,
+                borderRadius: 28,
+                backgroundColor: "#fee2e2",
+                justifyContent: "center",
+                alignItems: "center",
+                marginBottom: 16
+              }}>
+                <Ionicons name="warning-outline" size={28} color="#ef4444" />
+              </View>
+
+              <Text style={{
+                fontFamily: Fonts.black,
+                fontSize: 20,
+                color: Theme.textPrimary || "#1c2d42",
+                marginBottom: 10,
+                textAlign: "center"
+              }}>
+                Confirm Day End
+              </Text>
+
+              <Text style={{
+                fontFamily: Fonts.medium,
+                fontSize: 14,
+                color: Theme.textSecondary || "#556e8a",
+                textAlign: "center",
+                lineHeight: 20,
+                marginBottom: 24
+              }}>
+                Are you sure you want to close the day? This will finalize all transactions and prepare for the next business day.
+              </Text>
+
+              <View style={{ flexDirection: "row", gap: 12, width: "100%" }}>
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    height: 48,
+                    borderRadius: 14,
+                    backgroundColor: Theme.bgMuted || "#f1f5f9",
+                    justifyContent: "center",
+                    alignItems: "center"
+                  }}
+                  onPress={() => setShowConfirmModal(false)}
+                >
+                  <Text style={{ fontFamily: Fonts.bold, fontSize: 15, color: Theme.textPrimary || "#1c2d42" }}>
+                    Cancel
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    height: 48,
+                    borderRadius: 14,
+                    backgroundColor: "#ef4444",
+                    justifyContent: "center",
+                    alignItems: "center"
+                  }}
+                  onPress={() => {
+                    setShowConfirmModal(false);
+                    executeDayEnd();
+                  }}
+                >
+                  <Text style={{ fontFamily: Fonts.bold, fontSize: 15, color: "#fff" }}>
+                    Confirm
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
       </Modal>
 
     </View>

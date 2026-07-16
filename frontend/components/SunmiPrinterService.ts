@@ -2,6 +2,7 @@
 import { Platform, NativeModules } from "react-native";
 import { API_URL } from "../constants/Config";
 import { formatToSingaporeDate, formatToSingaporeTime, parseDatabaseDate } from "../utils/timezoneHelper";
+import { useCompanySettingsStore } from "../stores/companySettingsStore";
 
 const { SunmiPrinterDetector } = NativeModules;
 
@@ -406,7 +407,10 @@ class SunmiPrinterService {
 
       const printItems = (saleData.items || []).filter((i: any) => i.status !== "VOIDED");
       const activeItems = (saleData.items || []).filter((i: any) => i.status !== "VOIDED" && i.statusCode !== 0);
-      const allItemsHaveSC = activeItems.length > 0 && activeItems.every((item: any) => Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+      const allItemsHaveSC = activeItems.length > 0 && activeItems.every((item: any) => {
+        const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+        return !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+      });
 
       for (const item of printItems) {
         const fullItemName = item.name || item.DishName || item.ProductName || "";
@@ -429,7 +433,8 @@ class SunmiPrinterService {
           await SunmiModule.printText(formatter.left(`   ` + "🎵 " + songName));
         }
 
-        const isSC = Number(item.isServiceCharge) === 1 || item.isServiceCharge === true;
+        const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+        const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
         if (isSC && !allItemsHaveSC) {
           await SunmiModule.printText(formatter.left(`    [Service Charge ${companySettings.serviceChargePercentage}%]`));
         }
@@ -447,7 +452,10 @@ class SunmiPrinterService {
         const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
         if (discAmt > 0) {
           const discType = item.discountType || "percentage";
-          const discStr = discType === "percentage" ? `-${discAmt}%` : `-${symbol}${discAmt.toFixed(2)}`;
+          const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+          const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
+          const effectiveDisc = discType === "percentage" ? discAmt : Math.min(discAmt, discountBasis);
+          const discStr = discType === "percentage" ? `-${discAmt}%` : `-${symbol}${effectiveDisc.toFixed(2)}`;
           await SunmiModule.printText(formatter.left(`    Discount: ${discStr}`));
         }
       }
@@ -460,15 +468,17 @@ class SunmiPrinterService {
       (saleData.items || []).forEach((item: any) => {
         if (item.status === "VOIDED") return;
         const qtyNum = parseInt(String(item.qty || item.quantity || 1)) || 1;
+        const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+        const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
         const baseTotal = (item.price || 0) * qtyNum;
         let itemDiscount = 0;
         const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
         const discType = item.discountType || "percentage";
         if (discAmt > 0) {
           if (discType === "percentage") {
-            itemDiscount = baseTotal * (discAmt / 100);
+            itemDiscount = (discountBasis * (discAmt / 100)) * qtyNum;
           } else {
-            itemDiscount = discAmt * qtyNum;
+            itemDiscount = Math.min(discAmt, discountBasis) * qtyNum;
           }
         }
         grossTotal += baseTotal;
@@ -512,19 +522,22 @@ class SunmiPrinterService {
         (saleData.items || []).forEach((item: any) => {
           if (item.status === "VOIDED") return;
           const qtyNum = parseInt(String(item.qty || item.quantity || 1)) || 1;
+          const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+          const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
           const baseTotal = (item.price || 0) * qtyNum;
           let itemDiscount = 0;
           const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
           const discType = item.discountType || "percentage";
           if (discAmt > 0) {
             if (discType === "percentage") {
-              itemDiscount = baseTotal * (discAmt / 100);
+              itemDiscount = (discountBasis * (discAmt / 100)) * qtyNum;
             } else {
-              itemDiscount = discAmt * qtyNum;
+              itemDiscount = Math.min(discAmt, discountBasis) * qtyNum;
             }
           }
           const itemSubtotal = baseTotal - itemDiscount;
-          const isSC = Number(item.isServiceCharge) === 1 || item.isServiceCharge === true;
+          const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+          const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
           if (isSC) {
             scEligibleSubtotal += itemSubtotal;
           }
@@ -540,7 +553,27 @@ class SunmiPrinterService {
         serviceChargeAmount = scEligibleNet * (scPercentage / 100);
       }
       const hasSC = serviceChargeAmount > 0;
-      const taxableAmount = currentSubtotal + serviceChargeAmount;
+      const companySettingsStore = useCompanySettingsStore.getState().settings;
+      const takeawayRateFromSettings = companySettingsStore?.takeawayCharges || 0;
+      let takeawayCharge = saleData.takeawayCharge !== undefined ? parseFloat(String(saleData.takeawayCharge)) : 0;
+      let takeawayQty = (saleData.items || []).reduce((sum: number, item: any) => {
+        const isTW = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+        const isVoided = item.status === "VOIDED" || item.StatusCode === 0;
+        if (isTW && !isVoided) {
+          return sum + (item.qty || item.quantity || 1);
+        }
+        return sum;
+      }, 0);
+
+      if (takeawayQty === 0 && takeawayCharge > 0) {
+        const effectiveRate = takeawayRateFromSettings > 0 ? takeawayRateFromSettings : takeawayCharge;
+        takeawayQty = Math.round(takeawayCharge / effectiveRate) || 1;
+      } else if (takeawayQty > 0 && takeawayCharge === 0) {
+        takeawayCharge = takeawayQty * takeawayRateFromSettings;
+      }
+      const takeawayRate = takeawayQty > 0 ? (takeawayCharge / takeawayQty) : takeawayRateFromSettings;
+      
+      const taxableAmount = currentSubtotal + serviceChargeAmount + takeawayCharge;
       const gstAmountRaw = gstRate > 0 ? taxableAmount * (gstRate / 100) : 0;
       const gstAmount = Math.round(gstAmountRaw * 100) / 100;
       
@@ -561,6 +594,10 @@ class SunmiPrinterService {
           allItemsHaveSC ? "Service Charge:" : "Item Service Charge:",
           `${symbol}${serviceChargeAmount.toFixed(2)}`
         ));
+      }
+
+      if (takeawayCharge > 0) {
+        await SunmiModule.printText(formatter.twoCols(`Takeaway Charges (${symbol}${takeawayRate.toFixed(2)}*${takeawayQty}):`, `${symbol}${takeawayCharge.toFixed(2)}`));
       }
 
       if (gstRate > 0) {
@@ -589,6 +626,18 @@ class SunmiPrinterService {
           if (saleData.change && saleData.change > 0) {
             await SunmiModule.printText(formatter.twoCols("CHANGE:", `${symbol}${saleData.change.toFixed(2)}`));
           }
+        }
+      }
+
+      // 🏆 Print member reward stats on Sunmi Receipt
+      if (saleData.mobileNo) {
+        await SunmiModule.printText(formatter.divider("-"));
+        await SunmiModule.printText(formatter.twoCols("Member Phone:", String(saleData.mobileNo)));
+        if (parseFloat(saleData.rewardPointsEarned) > 0) {
+          await SunmiModule.printText(formatter.twoCols("Points Earned:", `+$${parseFloat(saleData.rewardPointsEarned).toFixed(2)}`));
+        }
+        if (parseFloat(saleData.memberRewardBalance) > 0) {
+          await SunmiModule.printText(formatter.twoCols("Avail Member Credit:", `$${parseFloat(saleData.memberRewardBalance).toFixed(2)}`));
         }
       }
 
@@ -682,7 +731,15 @@ class SunmiPrinterService {
       await SunmiModule.lineWrap(1);
       for (const item of items) {
         await setSize(fontSizes.item);
-        await SunmiModule.printText(formatter.left(`[${item.qty || item.quantity || 1}] ${item.name}`));
+        const lines = (item.name || "").split("\n");
+        for (let idx = 0; idx < lines.length; idx++) {
+          const line = lines[idx];
+          if (idx === 0) {
+            await SunmiModule.printText(formatter.left(`[${item.qty || item.quantity || 1}] ${line}`));
+          } else {
+            await SunmiModule.printText(formatter.left(`    ${line}`));
+          }
+        }
 
         const songName = item.songName || item.SongName || "";
         if (songName) {
@@ -693,8 +750,15 @@ class SunmiPrinterService {
 
         const isTw = !!(item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway);
         if (isTw) {
-          await setSize(fontSizes.note);
+          // Increase size to item size and enable bold
+          await setSize(fontSizes.item);
+          try {
+            if (SunmiModule.setBold) await SunmiModule.setBold(true);
+          } catch (_) {}
           await SunmiModule.printText(formatter.left(`  - Takeaway`));
+          try {
+            if (SunmiModule.setBold) await SunmiModule.setBold(false);
+          } catch (_) {}
           await SunmiModule.lineWrap(1);
         }
 

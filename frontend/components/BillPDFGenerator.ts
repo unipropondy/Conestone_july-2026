@@ -20,9 +20,10 @@ interface CompanySettings {
   cashierName: string;
   currency: string;
   currencySymbol: string;
-   companyLogo?: string;        // ✅ ADD THIS
+  companyLogo?: string;        // ✅ ADD THIS
   halalLogo?: string;          // ✅ ADD THIS
   printerIp?: string;          // ✅ ADD THIS
+  takeawayCharges?: number;    // ✅ ADD THIS
   showCompanyLogo?: boolean;   // ✅ ADD THIS
   showHalalLogo?: boolean; 
 }
@@ -148,6 +149,7 @@ static async loadSettings(userId?: string | number): Promise<CompanySettings> {
                 printerIp: settings.PrinterIP || '',
                 showCompanyLogo: showCompanyLogo === true,
                 showHalalLogo: showHalalLogo === true,
+                takeawayCharges: parseFloat(settings.TakeawayCharges) || 0,
             };
 
             this.settingsCache[targetId] = {
@@ -175,6 +177,7 @@ static async loadSettings(userId?: string | number): Promise<CompanySettings> {
       cashierName: '',
       currency: 'SGD',
       currencySymbol: '$',
+      takeawayCharges: 0,
     };
   }
   
@@ -206,7 +209,8 @@ static async loadSettings(userId?: string | number): Promise<CompanySettings> {
             PrinterIP: settings.printerIp || '', // ✅ ADDED
             ShowCompanyLogo: settings.showCompanyLogo ? 1 : 0,  // ✅ Simplified
             ShowHalalLogo: settings.showHalalLogo ? 1 : 0,      // ✅ Simplified
-            ServiceChargePercentage: settings.serviceChargePercentage || 0
+            ServiceChargePercentage: settings.serviceChargePercentage || 0,
+            TakeawayCharges: settings.takeawayCharges || 0
         };
         
         // ✅ Add timestamp to prevent caching
@@ -300,15 +304,17 @@ private static escapeHtml(str: string): string {
     (saleData.items || []).forEach((item: any) => {
       if (item.status === 'VOIDED') return;
       const qtyNum = parseInt(String(item.qty || item.quantity || 1)) || 1;
+      const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+      const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
       const baseTotal = (item.price || 0) * qtyNum;
       let itemDiscount = 0;
       const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
       const discType = item.discountType || 'percentage';
       if (discAmt > 0) {
         if (discType === 'percentage') {
-          itemDiscount = baseTotal * (discAmt / 100);
+          itemDiscount = (discountBasis * (discAmt / 100)) * qtyNum;
         } else {
-          itemDiscount = discAmt * qtyNum;
+          itemDiscount = Math.min(discAmt, discountBasis) * qtyNum;
         }
       }
       grossTotal += baseTotal;
@@ -322,7 +328,10 @@ private static escapeHtml(str: string): string {
     const originalSubTotal = grossTotal;
 
     const activeItems = (saleData.items || []).filter((i: any) => i.status !== 'VOIDED' && i.statusCode !== 0);
-    const allItemsHaveSC = activeItems.length > 0 && activeItems.every((item: any) => Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+    const allItemsHaveSC = activeItems.length > 0 && activeItems.every((item: any) => {
+      const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      return !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+    });
 
     const scPercentage = company.serviceChargePercentage || 0;
     const savedServiceCharge = saleData.serviceCharge != null ? parseFloat(String(saleData.serviceCharge)) : null;
@@ -335,19 +344,22 @@ private static escapeHtml(str: string): string {
       (saleData.items || []).forEach((item: any) => {
         if (item.status === 'VOIDED') return;
         const qtyNum = parseInt(String(item.qty || item.quantity || 1)) || 1;
+        const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+        const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
         const baseTotal = (item.price || 0) * qtyNum;
         let itemDiscount = 0;
         const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
         const discType = item.discountType || 'percentage';
         if (discAmt > 0) {
           if (discType === 'percentage') {
-            itemDiscount = baseTotal * (discAmt / 100);
+            itemDiscount = (discountBasis * (discAmt / 100)) * qtyNum;
           } else {
-            itemDiscount = discAmt * qtyNum;
+            itemDiscount = Math.min(discAmt, discountBasis) * qtyNum;
           }
         }
         const itemSubtotal = baseTotal - itemDiscount;
-        const isSC = Number(item.isServiceCharge) === 1 || item.isServiceCharge === true;
+        const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+        const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
         if (isSC) {
           scEligibleSubtotal += itemSubtotal;
         }
@@ -363,7 +375,25 @@ private static escapeHtml(str: string): string {
       serviceChargeAmount = scEligibleNet * (scPercentage / 100);
     }
 
-    const taxableAmount = currentSubtotal + serviceChargeAmount;
+    const takeawayRateFromSettings = parseFloat(String((company as any).TakeawayCharges ?? company.takeawayCharges ?? 0)) || 0;
+    let takeawayCharge = saleData.takeawayCharge !== undefined ? parseFloat(String(saleData.takeawayCharge)) : 0;
+    let takeawayQty = (saleData.items || []).reduce((sum: number, item: any) => {
+      const isTW = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      const isVoided = item.status === 'VOIDED' || item.StatusCode === 0;
+      if (isTW && !isVoided) {
+        return sum + (item.qty || item.Qty || item.quantity || 1);
+      }
+      return sum;
+    }, 0);
+
+    if (takeawayQty === 0 && takeawayCharge > 0) {
+      const effectiveRate = takeawayRateFromSettings > 0 ? takeawayRateFromSettings : takeawayCharge;
+      takeawayQty = Math.round(takeawayCharge / effectiveRate) || 1;
+    } else if (takeawayQty > 0 && takeawayCharge === 0) {
+      takeawayCharge = takeawayQty * takeawayRateFromSettings;
+    }
+    const takeawayRate = takeawayQty > 0 ? (takeawayCharge / takeawayQty) : takeawayRateFromSettings;
+    const taxableAmount = currentSubtotal + serviceChargeAmount + takeawayCharge;
     const hasSC = serviceChargeAmount > 0;
     const effectiveSCPercentage = serviceChargeAmount > 0 && currentSubtotal > 0
       ? Math.round((serviceChargeAmount / currentSubtotal) * 100)
@@ -431,7 +461,10 @@ private static escapeHtml(str: string): string {
                       const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
                       if (discAmt > 0) {
                         const discType = item.discountType || 'percentage';
-                        const discStr = discType === 'percentage' ? `-${discAmt}%` : `-${currencySymbol}${discAmt.toFixed(2)}`;
+                        const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+                        const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
+                        const effectiveDisc = discType === 'percentage' ? discAmt : Math.min(discAmt, discountBasis);
+                        const discStr = discType === 'percentage' ? `-${discAmt}%` : `-${currencySymbol}${effectiveDisc.toFixed(2)}`;
                         return `<div style="font-size: 8.5px; color: #555; font-style: italic; margin-top: 0.5mm;">Discount: ${discStr}</div>`;
                       }
                       return '';
@@ -739,8 +772,14 @@ private static escapeHtml(str: string): string {
             
             ${company.cashierName ? `
             <div class="detail-row">
-              <span class="detail-label">CASHIER:</span>
-              <span class="detail-value">${company.cashierName}</span>
+               <span class="detail-label">CASHIER:</span>
+               <span class="detail-value">${company.cashierName}</span>
+            </div>
+            ` : ''}
+            ${saleData.mobileNo ? `
+            <div class="detail-row">
+               <span class="detail-label">MEMBER PHONE:</span>
+               <span class="detail-value">${saleData.mobileNo}</span>
             </div>
             ` : ''}
           </div>
@@ -794,6 +833,12 @@ private static escapeHtml(str: string): string {
                <span>${currencySymbol}${serviceChargeAmount.toFixed(2)}</span>
              </div>
              ` : ''}
+             ${takeawayCharge > 0 ? `
+              <div class="total-row">
+                <span>Takeaway Charges (${currencySymbol}${takeawayRate.toFixed(2)} * ${takeawayQty}):</span>
+                <span>${currencySymbol}${takeawayCharge.toFixed(2)}</span>
+              </div>
+              ` : ''}
              ${hasGST && gstAmount > 0 ? `
              <div class="total-row">
                <span>GST (${gstRate}%):</span>
@@ -844,6 +889,20 @@ private static escapeHtml(str: string): string {
                 ` : ''}
               `}
             `}
+            
+            <!-- 🏆 Print Reward point transaction stats on PDF Invoice -->
+            ${parseFloat(saleData.rewardPointsEarned) > 0 ? `
+              <div class="payment-row" style="font-size: 10px; font-weight: 700; display: flex; justify-content: space-between; background: #FFF7ED; padding: 1.5mm; border-radius: 4px; margin-top: 1.5mm;">
+                <span style="color: #F97316;">POINTS EARNED:</span>
+                <span style="color: #F97316;">+$${parseFloat(saleData.rewardPointsEarned).toFixed(2)}</span>
+              </div>
+            ` : ''}
+            ${parseFloat(saleData.memberRewardBalance) > 0 ? `
+              <div class="payment-row" style="font-size: 10px; font-weight: 700; display: flex; justify-content: space-between; padding: 1.5mm 0;">
+                <span>AVAILABLE MEMBER CREDIT:</span>
+                <span style="color: green;">$${parseFloat(saleData.memberRewardBalance).toFixed(2)}</span>
+              </div>
+            ` : ''}
           </div>
           
           <!-- Footer -->

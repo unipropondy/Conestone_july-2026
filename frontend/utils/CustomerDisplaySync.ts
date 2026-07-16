@@ -46,6 +46,7 @@ export interface SyncCartParams {
   memberName?: string;
   isSplit?: boolean;
   splitPayments?: any[];
+  takeawayCharge?: number;
 }
 
 export interface PaymentSuccessParams {
@@ -101,13 +102,14 @@ export const CustomerDisplaySync = {
       const isDisplayOn = useGeneralSettingsStore.getState().settings.customerSideDisplay;
       if (!isDisplayOn) return;
 
-      const { orderContext, cart, discountInfo, gstPercentage, roundOff, active, orderId, paymentMethod, memberName, isSplit, splitPayments } = params;
+      const { orderContext, cart, discountInfo, gstPercentage, roundOff, active, orderId, paymentMethod, memberName, isSplit, splitPayments, takeawayCharge } = params;
       const companySettings = useCompanySettingsStore.getState().settings;
       const paymentSettings = usePaymentSettingsStore.getState().settings;
 
       const scPercentage = companySettings.serviceChargePercentage || 0;
       const scRate = scPercentage / 100;
       const gstRate = (gstPercentage || 0) / 100;
+      const takeawayChargeVal = takeawayCharge || 0;
 
       // 1. Calculate totals matching cashier formulas
       const { grossTotal, totalItemDiscount, scEligibleSubtotal } = cart.reduce(
@@ -115,6 +117,8 @@ export const CustomerDisplaySync = {
           const isVoided = item.status === "VOIDED" || item.StatusCode === 0 || item.statusCode === 0;
           if (isVoided) return acc;
           
+          const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+          const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
           const baseTotal = (item.price || 0) * item.qty;
           let itemDiscount = 0;
           const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
@@ -122,14 +126,15 @@ export const CustomerDisplaySync = {
           
           if (discAmt > 0) {
             if (discType === 'percentage') {
-              itemDiscount = baseTotal * (discAmt / 100);
+              itemDiscount = (discountBasis * (discAmt / 100)) * item.qty;
             } else {
-              itemDiscount = discAmt * item.qty;
+              itemDiscount = Math.min(discAmt, discountBasis) * item.qty;
             }
           }
 
           const itemSubtotal = baseTotal - itemDiscount;
-          const isSC = Number(item.isServiceCharge) === 1 || item.isServiceCharge === true;
+          const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+          const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
 
           return {
             grossTotal: acc.grossTotal + baseTotal,
@@ -160,7 +165,7 @@ export const CustomerDisplaySync = {
       })();
 
       const serviceChargeAmount = scEligibleNet * scRate;
-      const taxableAmount = netAfterDiscount + serviceChargeAmount;
+      const taxableAmount = netAfterDiscount + serviceChargeAmount + takeawayChargeVal;
 
       const gstAmountRaw = taxableAmount * gstRate;
       const gstAmount = Math.round(gstAmountRaw * 100) / 100;
@@ -169,6 +174,8 @@ export const CustomerDisplaySync = {
 
       // 2. Prepare clean items list for display
       const displayItems = cart.map(item => {
+        const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+        const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
         const baseTotal = (item.price || 0) * item.qty;
         let itemDiscount = 0;
         const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
@@ -176,9 +183,9 @@ export const CustomerDisplaySync = {
         
         if (discAmt > 0) {
           if (discType === 'percentage') {
-            itemDiscount = baseTotal * (discAmt / 100);
+            itemDiscount = (discountBasis * (discAmt / 100)) * item.qty;
           } else {
-            itemDiscount = discAmt * item.qty;
+            itemDiscount = Math.min(discAmt, discountBasis) * item.qty;
           }
         }
         const isVoided = item.status === "VOIDED" || item.StatusCode === 0 || item.statusCode === 0;
@@ -197,7 +204,7 @@ export const CustomerDisplaySync = {
           modifiers: item.modifiers || [],
           isCombo: !!item.isCombo,
           comboSelections: item.comboSelections || [],
-          isServiceCharge: Number(item.isServiceCharge) === 1 || item.isServiceCharge === true,
+          isServiceCharge: !(item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway) && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true),
         };
       });
 
@@ -216,6 +223,7 @@ export const CustomerDisplaySync = {
         orderDiscountAmount,
         serviceChargeAmount,
         serviceChargePercentage: scPercentage,
+        takeawayCharge: takeawayChargeVal,
         gstAmount,
         roundOff,
         netTotal,

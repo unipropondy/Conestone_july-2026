@@ -5,4 +5,6 @@
       "path": "./frontend"
     }
   ],
+  "compilerOptions": {},
+  "extends": "expo/tsconfig.base"
 }

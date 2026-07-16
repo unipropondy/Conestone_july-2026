@@ -46,6 +46,9 @@ type MemberType = {
   CurrentBalance?: number;
   Balance?: number;
   LowBalanceAlertSent?: boolean | number;
+  Promocode?: string;
+  Promoamount?: number;
+  AvailableCredit?: number;
 };
 
 const formatMoney = (amount: number) => {
@@ -279,9 +282,9 @@ export default function MembersScreen() {
 
     let message = "";
     if (availableBalance < 50) {
-      message = `Hi ${member.Name},\n\nYour available credit is $${formattedAvailable}, which is below the minimum threshold of $50.\n\nPlease top up your account to continue enjoying uninterrupted service.\n\nThank you.`;
+      message = `Hi ${member.Name},\n\nYour available balance is $${formattedAvailable}, which is below the minimum threshold of $50.\n\nPlease top up your account to continue enjoying uninterrupted service.\n\nThank you.`;
     } else {
-      message = `Hi ${member.Name},\n\nYour current available credit is $${formattedAvailable}.\n\nCredit Limit: $${formattedCreditLimit}\nConsumed Amount: $${formattedConsumed}\n\nThank you for being a valued member.`;
+      message = `Hi ${member.Name},\n\nYour current available balance is $${formattedAvailable}.\n\nPrepaid Amount: $${formattedCreditLimit}\nConsumed Amount: $${formattedConsumed}\n\nThank you for being a valued member.`;
     }
 
     const url = `whatsapp://send?phone=${phoneWithCountry}&text=${encodeURIComponent(message)}`;
@@ -309,6 +312,8 @@ export default function MembersScreen() {
     creditLimit: "1000",
     currentBalance: "0",
     balance: "0",
+    promocode: "",
+    promoamount: "",
   });
 
   const fetchMembers = useCallback(async () => {
@@ -360,7 +365,9 @@ export default function MembersScreen() {
       isActive: true,
       creditLimit: "1000", 
       currentBalance: "0", 
-      balance: "0" 
+      balance: "0",
+      promocode: "",
+      promoamount: ""
     });
     setSelectedCountryCode("+65");
     setLocalPhone("");
@@ -382,6 +389,8 @@ export default function MembersScreen() {
       creditLimit: String(member.CreditLimit ?? 0),
       currentBalance: String(member.CurrentBalance ?? 0),
       balance: String(member.Balance ?? 0),
+      promocode: member.Promocode || "",
+      promoamount: String(member.Promoamount ?? 0),
     });
     setModalMode("EDIT");
   };
@@ -412,6 +421,8 @@ export default function MembersScreen() {
           currentBalance: parseFloat(formData.currentBalance) || 0,
           balance: editingMember ? (editingMember.Balance ?? 0) : 0,
           userId: user?.userId,
+          promocode: formData.promocode.trim() || null,
+          promoamount: parseFloat(formData.promoamount) || 0,
         }),
       });
 
@@ -446,7 +457,7 @@ export default function MembersScreen() {
     const creditLimit    = item.CreditLimit    || 0;
     const currentBalance = item.CurrentBalance || 0;
     const totalBalance   = item.Balance        || 0;
-    const availableCredit = creditLimit > 0 ? (creditLimit - currentBalance) : currentBalance;
+    const availableCredit = item.AvailableCredit !== undefined ? item.AvailableCredit : (creditLimit > 0 ? (creditLimit - currentBalance) : currentBalance);
     const isLowCredit    = availableCredit < 50;
     const alertSent      = item.LowBalanceAlertSent === true || item.LowBalanceAlertSent === 1;
 
@@ -521,6 +532,16 @@ export default function MembersScreen() {
           </View>
         ) : null}
 
+        {item.Promocode ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 15, marginTop: 6 }}>
+            <Ionicons name="gift-outline" size={14} color={Theme.primary} />
+            <Text style={{ fontSize: 13, fontFamily: Fonts.bold, color: Theme.textSecondary }}>
+              Promo Code: <Text style={{ color: Theme.primary }}>{item.Promocode}</Text>
+              {item.Promoamount ? ` (${formatMoney(item.Promoamount)})` : ''}
+            </Text>
+          </View>
+        ) : null}
+
         {/* ── Low Credit Warning Badge ── */}
         {isLowCredit && (
           <View style={styles.lowCreditWarningBadge}>
@@ -537,7 +558,7 @@ export default function MembersScreen() {
         {/* ── Prepaid Balance Card ── */}
         <View style={styles.financialSummaryBlock}>
           <View style={styles.financialCol}>
-            <Text style={styles.financialLabel}>CREDIT LIMIT</Text>
+            <Text style={styles.financialLabel}>PREPAID AMOUNT</Text>
             <Text style={[styles.financialVal, { color: Theme.success }]}>
               {formatMoney(creditLimit)}
             </Text>
@@ -549,7 +570,7 @@ export default function MembersScreen() {
             </Text>
           </View>
           <View style={styles.financialCol}>
-            <Text style={styles.financialLabel}>AVAILABLE CREDIT</Text>
+            <Text style={styles.financialLabel}>AVAILABLE BALANCE</Text>
             <Text style={[
               styles.financialVal,
               { color: isLowCredit ? Theme.danger : Theme.success }
@@ -688,12 +709,23 @@ export default function MembersScreen() {
                 </View>
                 <View style={styles.inputRow}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.inputLabel}>CREDIT LIMIT</Text>
+                    <Text style={styles.inputLabel}>PREPAID AMOUNT</Text>
                     <TextInput style={styles.sheetInput} keyboardType="numeric" value={formData.creditLimit} onChangeText={v => setFormData({ ...formData, creditLimit: v })} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.inputLabel}>CONSUMED</Text>
                     <TextInput style={styles.sheetInput} keyboardType="numeric" value={formData.currentBalance} onChangeText={v => setFormData({ ...formData, currentBalance: v })} />
+                  </View>
+                </View>
+
+                <View style={styles.inputRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>PROMO CODE</Text>
+                    <TextInput style={styles.sheetInput} value={formData.promocode} onChangeText={v => setFormData({ ...formData, promocode: v })} placeholder="Promo Code" placeholderTextColor={Theme.textMuted} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>PROMO AMOUNT</Text>
+                    <TextInput style={styles.sheetInput} keyboardType="numeric" value={formData.promoamount} onChangeText={v => setFormData({ ...formData, promoamount: v })} placeholder="0.00" placeholderTextColor={Theme.textMuted} />
                   </View>
                 </View>
 

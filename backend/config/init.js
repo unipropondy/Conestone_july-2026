@@ -58,6 +58,101 @@ async function initDB(pool) {
     await runQuery("MemberMaster - ModifiedBy", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'ModifiedBy') ALTER TABLE [dbo].[MemberMaster] ADD ModifiedBy UNIQUEIDENTIFIER NULL");
     await runQuery("MemberMaster - ModifiedDate", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'ModifiedDate') ALTER TABLE [dbo].[MemberMaster] ADD ModifiedDate DATETIME NULL");
     await runQuery("MemberMaster - CreatedBy", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'CreatedBy') ALTER TABLE [dbo].[MemberMaster] ADD CreatedBy UNIQUEIDENTIFIER NULL");
+    await runQuery("MemberMaster - Promocode", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'Promocode') ALTER TABLE [dbo].[MemberMaster] ADD Promocode NVARCHAR(100) NULL");
+    await runQuery("MemberMaster - Promoamount", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'Promoamount') ALTER TABLE [dbo].[MemberMaster] ADD Promoamount DECIMAL(18,2) NULL");
+    // AvailableCredit computed column — only add if it doesn't exist yet
+    await runQuery("MemberMaster - AvailableCredit", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'AvailableCredit') ALTER TABLE [dbo].[MemberMaster] ADD AvailableCredit AS (CASE WHEN CreditLimit > 0 THEN (CreditLimit - CurrentBalance) ELSE CurrentBalance END)");
+
+    // 🏆 REWARD POINTS: Add RewardCredit wallet column to MemberMaster
+    await runQuery("MemberMaster - RewardCredit", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'RewardCredit') ALTER TABLE [dbo].[MemberMaster] ADD RewardCredit DECIMAL(18,4) NOT NULL DEFAULT 0");
+
+    // 🏆 REWARD POINTS: Drop and recreate AvailableCredit computed column to include RewardCredit
+    // This updates the formula so AvailableCredit = credit capacity + reward wallet
+    await runQuery("MemberMaster - AvailableCredit (Reward-aware)", `
+      IF EXISTS (SELECT * FROM sys.computed_columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'AvailableCredit')
+      BEGIN
+        -- Only rebuild if RewardCredit column now exists (safe guard)
+        IF EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'RewardCredit')
+        BEGIN
+          -- Check if the formula already includes RewardCredit (avoid repeated DROP/ADD)
+          DECLARE @existingDef NVARCHAR(MAX);
+          SELECT @existingDef = definition FROM sys.computed_columns
+          WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'AvailableCredit';
+          IF @existingDef NOT LIKE '%RewardCredit%'
+          BEGIN
+            ALTER TABLE [dbo].[MemberMaster] DROP COLUMN AvailableCredit;
+            ALTER TABLE [dbo].[MemberMaster] ADD AvailableCredit AS (CASE WHEN CreditLimit > 0 THEN (CreditLimit - CurrentBalance) ELSE 0 END + ISNULL(RewardCredit, 0));
+          END
+        END
+      END
+    `);
+
+    // 🏆 REWARD POINTS: Unique constraint on Phone (no duplicate member numbers)
+    await runQuery("MemberMaster - UniquePhone", `
+      IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes 
+        WHERE object_id = OBJECT_ID(N'[dbo].[MemberMaster]') AND name = 'UQ_MemberMaster_Phone'
+      )
+      BEGIN
+        -- Only create if there are no existing duplicate phones
+        IF NOT EXISTS (
+          SELECT Phone, COUNT(*) FROM [dbo].[MemberMaster]
+          WHERE Phone IS NOT NULL AND Phone <> ''
+          GROUP BY Phone HAVING COUNT(*) > 1
+        )
+        BEGIN
+          CREATE UNIQUE NONCLUSTERED INDEX UQ_MemberMaster_Phone
+          ON [dbo].[MemberMaster](Phone)
+          WHERE Phone IS NOT NULL AND Phone <> '';
+        END
+      END
+    `);
+
+    // 🏆 REWARD POINTS: RewardMaster — configures earn ratio
+    await runQuery("Create RewardMaster", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RewardMaster]') AND type in (N'U'))
+      BEGIN
+        CREATE TABLE [dbo].[RewardMaster] (
+          [Id]           INT IDENTITY(1,1) PRIMARY KEY,
+          [SpendAmount]  DECIMAL(18,2) NOT NULL DEFAULT 100,
+          [CreditAmount] DECIMAL(18,4) NOT NULL DEFAULT 1,
+          [IsActive]     BIT NOT NULL DEFAULT 1,
+          [Description]  NVARCHAR(255) NULL,
+          [CreatedOn]    DATETIME DEFAULT GETDATE(),
+          [ModifiedOn]   DATETIME NULL
+        );
+        -- Seed with default: every $100 spent earns $1 reward credit
+        INSERT INTO [dbo].[RewardMaster] (SpendAmount, CreditAmount, IsActive, Description)
+        VALUES (100, 1, 1, 'Default: $100 spent = $1 reward credit');
+      END
+    `);
+
+    // 🏆 REWARD POINTS: RewardPointDetails — per-transaction audit log
+    await runQuery("Create RewardPointDetails", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RewardPointDetails]') AND type in (N'U'))
+      BEGIN
+        CREATE TABLE [dbo].[RewardPointDetails] (
+          [Id]           UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWID(),
+          [MemberId]     UNIQUEIDENTIFIER NOT NULL,
+          [SettlementId] UNIQUEIDENTIFIER NULL,
+          [BillNo]       NVARCHAR(50) NULL,
+          [BillAmount]   DECIMAL(18,2) NOT NULL DEFAULT 0,
+          [PointsEarned] DECIMAL(18,4) NOT NULL DEFAULT 0,
+          [PointsUsed]   DECIMAL(18,4) NOT NULL DEFAULT 0,
+          [TransType]    NVARCHAR(20) NOT NULL DEFAULT 'EARN',
+          [PayMode]      NVARCHAR(50) NULL,
+          [Remarks]      NVARCHAR(255) NULL,
+          [CreatedOn]    DATETIME DEFAULT GETDATE()
+        );
+        CREATE NONCLUSTERED INDEX IX_RewardPointDetails_MemberId ON [dbo].[RewardPointDetails](MemberId);
+        CREATE NONCLUSTERED INDEX IX_RewardPointDetails_SettlementId ON [dbo].[RewardPointDetails](SettlementId);
+      END
+    `);
+
+    // 🏆 REWARD POINTS: Add RewardPointDetails columns for backward compat if table already existed
+    await runQuery("RewardPointDetails - PointsUsed", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RewardPointDetails]') AND name = 'PointsUsed') ALTER TABLE [dbo].[RewardPointDetails] ADD PointsUsed DECIMAL(18,4) NOT NULL DEFAULT 0");
+    await runQuery("RewardPointDetails - TransType", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RewardPointDetails]') AND name = 'TransType') ALTER TABLE [dbo].[RewardPointDetails] ADD TransType NVARCHAR(20) NOT NULL DEFAULT 'EARN'");
+
 
     // 2.1 CreditCustomerMaster (Dedicated Credit Accounts table separate from Members)
     await runQuery("Create CreditCustomerMaster", `
@@ -236,11 +331,16 @@ async function initDB(pool) {
     await runQuery("CompanySettings - HoldOvertimeMinutes", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[CompanySettings]') AND name = 'HoldOvertimeMinutes') ALTER TABLE [dbo].[CompanySettings] ADD HoldOvertimeMinutes INT DEFAULT 30");
     await runQuery("CompanySettings - ServiceChargePercentage", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[CompanySettings]') AND name = 'ServiceChargePercentage') ALTER TABLE [dbo].[CompanySettings] ADD ServiceChargePercentage DECIMAL(18, 2) DEFAULT 0");
     await runQuery("CompanySettings - SVCIdentification", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[CompanySettings]') AND name = 'SVCIdentification') ALTER TABLE [dbo].[CompanySettings] ADD SVCIdentification BIT NOT NULL DEFAULT 1");
+    await runQuery("CompanySettings - TakeawayCharges", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[CompanySettings]') AND name = 'TakeawayCharges') ALTER TABLE [dbo].[CompanySettings] ADD TakeawayCharges DECIMAL(18, 2) DEFAULT 0");
+    await runQuery("CompanySettings - LastBridgeHeartbeat", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[CompanySettings]') AND name = 'LastBridgeHeartbeat') ALTER TABLE [dbo].[CompanySettings] ADD LastBridgeHeartbeat DATETIME");
     await runQuery("AppSettings - EnableCheckoutFlow", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'EnableCheckoutFlow') ALTER TABLE [dbo].[AppSettings] ADD EnableCheckoutFlow BIT NOT NULL DEFAULT 1");
     await runQuery("AppSettings - EnableDirectProcessToPay", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'EnableDirectProcessToPay') ALTER TABLE [dbo].[AppSettings] ADD EnableDirectProcessToPay BIT NOT NULL DEFAULT 0");
     await runQuery("AppSettings - CustomerSideDisplay", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'CustomerSideDisplay') ALTER TABLE [dbo].[AppSettings] ADD CustomerSideDisplay BIT NOT NULL DEFAULT 1");
     await runQuery("AppSettings - EnableGuestDetailsPopup", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'EnableGuestDetailsPopup') ALTER TABLE [dbo].[AppSettings] ADD EnableGuestDetailsPopup BIT NOT NULL DEFAULT 1");
     await runQuery("AppSettings - EnableCashDrawer", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'EnableCashDrawer') ALTER TABLE [dbo].[AppSettings] ADD EnableCashDrawer BIT NOT NULL DEFAULT 1");
+    await runQuery("RestaurantOrderCur - TakeawayCharge", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderCur]') AND name = 'TakeawayCharge') ALTER TABLE [dbo].[RestaurantOrderCur] ADD TakeawayCharge DECIMAL(18, 2) DEFAULT 0");
+    await runQuery("RestaurantOrder - TakeawayCharge", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrder]') AND name = 'TakeawayCharge') ALTER TABLE [dbo].[RestaurantOrder] ADD TakeawayCharge DECIMAL(18, 2) DEFAULT 0");
+    await runQuery("SettlementHeader - TakeawayCharge", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[SettlementHeader]') AND name = 'TakeawayCharge') ALTER TABLE [dbo].[SettlementHeader] ADD TakeawayCharge DECIMAL(18, 2) DEFAULT 0");
 
     // 11. OrderMergeHistory Setup
     await runQuery("Create OrderMergeHistory", `
@@ -528,6 +628,22 @@ async function initDB(pool) {
 
     // 19. dishOrderItemShare updates
     await runQuery("dishOrderItemShare - TargetAmount", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[dishOrderItemShare]') AND name = 'TargetAmount') ALTER TABLE [dbo].[dishOrderItemShare] ADD TargetAmount DECIMAL(18, 2) DEFAULT 0");
+
+    // 19.1 Create DateEntry table for Day Start/Day End tracking
+    await runQuery("Create DateEntry table", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[DateEntry]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[DateEntry](
+              [DateEntryId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [username] [varchar](30) NULL,
+              [StartDate] [date] NOT NULL,
+              [CreatedBy] [varchar](30) NULL,
+              [CreatedDate] [datetime] DEFAULT GETDATE(),
+              [UpdateBy] [varchar](30) NULL,
+              [UpdateDate] [datetime] NULL
+          )
+      END
+    `);
 
     // 20. Create CashDrawerRemarks table
     await runQuery("Create CashDrawerRemarks table", `
@@ -863,7 +979,7 @@ async function initDB(pool) {
       END
     `);
 
-    console.log("✅ Database schema and performance indexes are up to date.");
+    console.log("✅ Database schema and performance indexes are up to date. (Rewards system active)");
 
 
     // 🔄 Auto-sync kitchens to PrintMaster on every startup

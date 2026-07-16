@@ -494,7 +494,8 @@ const CartItemRow = React.memo(
       item.StatusCode === 0 ||
       item.statusCode === 0;
 
-    const isSC = (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true) && useGeneralSettingsStore.getState().settings.SVCIdentification !== false;
+    const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+    const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true) && useGeneralSettingsStore.getState().settings.SVCIdentification !== false;
 
     return (
       <View style={[
@@ -832,9 +833,18 @@ const CartItemRow = React.memo(
                           isPhone && { fontSize: 8 },
                         ]}
                       >
-                        {item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount)
-                          ? `-$${Number(item.discountAmount ?? item.discount).toFixed(2)}`
-                          : `-${Number(item.discountAmount ?? item.discount)}%`}
+                        {(() => {
+                          const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+                          const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
+                          const rawDiscAmt = Number(item.discountAmount ?? item.discount ?? 0);
+                          const isFixed = item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount);
+                          if (isFixed) {
+                            const effectiveDisc = Math.min(rawDiscAmt, discountBasis);
+                            return `-$${effectiveDisc.toFixed(2)}`;
+                          } else {
+                            return `-${rawDiscAmt}%`;
+                          }
+                        })()}
                       </Text>
                     </View>
                   </View>
@@ -847,11 +857,16 @@ const CartItemRow = React.memo(
                     isPhone && { fontSize: 14, minWidth: 0 },
                   ]}
                 >
-                  ${((item.price || 0) * item.qty - (
-                    (item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount))
-                      ? (Number(item.discountAmount ?? item.discount ?? 0) * item.qty)
-                      : ((item.price || 0) * item.qty * (Number(item.discountAmount ?? item.discount ?? 0) / 100))
-                  )).toFixed(2)}
+                  ${(() => {
+                    const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+                    const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
+                    const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
+                    const isFixed = item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount);
+                    const itemDiscount = discAmt > 0
+                      ? (isFixed ? (Math.min(discAmt, discountBasis) * item.qty) : ((discountBasis * (discAmt / 100)) * item.qty))
+                      : 0;
+                    return ((item.price || 0) * item.qty - itemDiscount);
+                  })().toFixed(2)}
                 </Text>
               </View>
             </View>
@@ -1112,12 +1127,16 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
     }
   }, [displayItems.length, orderContext?.tableId]);
 
-  const { grossTotal, totalDiscount, scEligibleSubtotal } = useMemo(() => {
+  const takeawayCharges = settings.takeawayCharges || 0;
+
+  const { grossTotal, totalDiscount, scEligibleSubtotal, takeawayChargeAmt, takeawayQty } = useMemo(() => {
     return displayItems.reduce(
       (acc, item) => {
         const isVoided = "status" in item && item.status === "VOIDED";
         if (isVoided) return acc;
 
+        const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+        const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
         const baseTotal = (item.price || 0) * item.qty;
         let itemDiscount = 0;
         const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
@@ -1125,32 +1144,39 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
 
         if (discAmt > 0) {
           if (discType === 'percentage') {
-            itemDiscount = baseTotal * (discAmt / 100);
+            itemDiscount = (discountBasis * (discAmt / 100)) * item.qty;
           } else {
-            itemDiscount = discAmt * item.qty;
+            itemDiscount = Math.min(discAmt, discountBasis) * item.qty;
           }
         }
 
         const itemSubtotal = baseTotal - itemDiscount;
-        const isSC = Number(item.isServiceCharge) === 1 || item.isServiceCharge === true;
+        const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+        const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+        const itemTWCharge = isTakeawayItem ? item.qty * takeawayCharges : 0;
 
         return {
           grossTotal: acc.grossTotal + baseTotal,
           totalDiscount: acc.totalDiscount + itemDiscount,
           scEligibleSubtotal: acc.scEligibleSubtotal + (isSC ? itemSubtotal : 0),
+          takeawayChargeAmt: acc.takeawayChargeAmt + itemTWCharge,
+          takeawayQty: acc.takeawayQty + (isTakeawayItem ? item.qty : 0),
         };
       },
-      { grossTotal: 0, totalDiscount: 0, scEligibleSubtotal: 0 },
+      { grossTotal: 0, totalDiscount: 0, scEligibleSubtotal: 0, takeawayChargeAmt: 0, takeawayQty: 0 },
     );
-  }, [displayItems]);
+  }, [displayItems, takeawayCharges]);
 
   const subtotal = grossTotal - totalDiscount;
   const serviceChargeAmt = scEligibleSubtotal * scRate;
   const allItemsHaveSC = useMemo(() => {
     const activeItems = displayItems.filter((i: any) => i.status !== "VOIDED" && i.statusCode !== 0);
-    return activeItems.length > 0 && activeItems.every((item: any) => Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+    return activeItems.length > 0 && activeItems.every((item: any) => {
+      const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      return !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+    });
   }, [displayItems]);
-  const taxableAmt = subtotal + serviceChargeAmt;
+  const taxableAmt = subtotal + serviceChargeAmt + takeawayChargeAmt;
   const taxAmountRaw = taxableAmt * gstRate;
   // ✅ FIX: Round GST for display so it matches the payable total
   // (e.g. 0.495 → 0.50, not 0.49 which is what toFixed(2) gives due to V8 float truncation)
@@ -1406,7 +1432,7 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
       createdAt: Date.now(),
     });
 
-    // 2. Start Printers immediately (No waiting) — delegated to shared pipeline
+    // 2. Start Printers immediately (No waiting)
     (async () => {
       const isAdditional = cart.some((i: any) => isItemSent(i));
       await UniversalPrinter.routeAndPrintOrderKOT(
@@ -1687,11 +1713,22 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
               {serviceChargeAmt > 0 && (
                 <View style={styles.summaryRow}>
                   <Text style={styles.summaryLabel}>
-                    {allItemsHaveSC ? "Service Charge" : "Item Service Charge"} ({settings.serviceChargePercentage}%)
+                    {allItemsHaveSC ? "Service Charge" : "Item SVC"} ({settings.serviceChargePercentage}%)
                   </Text>
                   <Text style={styles.summaryValue}>
                     {currencySymbol}
                     {serviceChargeAmt.toFixed(2)}
+                  </Text>
+                </View>
+              )}
+              {takeawayChargeAmt > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>
+                    TW Charges ({currencySymbol}{takeawayCharges.toFixed(2)} * {takeawayQty})
+                  </Text>
+                  <Text style={styles.summaryValue}>
+                    {currencySymbol}
+                    {takeawayChargeAmt.toFixed(2)}
                   </Text>
                 </View>
               )}
@@ -1958,63 +1995,106 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
                       );
                     }
                   } else {
-                    // Takeaway Flow 2: Just show Green "Proceed to Pay" full width
-                    return (
-                      <TouchableOpacity
-                        disabled={isCheckingOut}
-                        style={[
-                          styles.proceedBtn,
-                          { flex: 1, backgroundColor: "#10B981" },
-                          isCheckingOut && { opacity: 0.6 }
-                        ]}
-                        onPress={async () => {
-                          if (unsentCount > 0) {
-                            if (isCheckingOut) return;
-                            useCartStore.getState().cancelPendingSync();
-                            const tableId = orderContext.tableId;
-                            if (!tableId) return;
+                    // Takeaway Flow 2: Split layout with KOT button if unsentCount > 0, otherwise full width Proceed to Pay
+                    if (unsentCount > 0) {
+                      return (
+                        <>
+                          {/* KOT button (Indigo, text 'KOT', 50px) */}
+                          <TouchableOpacity
+                            disabled={isCheckingOut}
+                            style={[
+                              styles.compactIconBtn,
+                              { backgroundColor: "#4F46E5", marginRight: 8 },
+                              isCheckingOut && { opacity: 0.6 }
+                            ]}
+                            onPress={async () => {
+                              if (isCheckingOut) return;
+                              setIsCheckingOut(true);
+                              try {
+                                await handleSendOrder(true);
+                              } catch (err) {
+                                console.error("KOT send error:", err);
+                              } finally {
+                                setIsCheckingOut(false);
+                              }
+                            }}
+                          >
+                            {isCheckingOut ? (
+                              <ActivityIndicator size="small" color="#fff" />
+                            ) : (
+                              <Text style={{ color: "#fff", fontFamily: Fonts.black, fontSize: 13 }}>KOT</Text>
+                            )}
+                          </TouchableOpacity>
 
-                            setIsCheckingOut(true);
-                            try {
-                              const targetOrderId = activeOrder?.orderId || currentTableOrderId || "NEW";
-                              const officialOrderId = await saveCartHelper(tableId, targetOrderId, true);
+                          {/* Proceed to Pay (Green, flex-grow) */}
+                          <TouchableOpacity
+                            disabled={isCheckingOut}
+                            style={[
+                              styles.proceedBtn,
+                              { flex: 1, backgroundColor: "#10B981" },
+                              isCheckingOut && { opacity: 0.6 }
+                            ]}
+                            onPress={async () => {
+                              if (isCheckingOut) return;
+                              useCartStore.getState().cancelPendingSync();
+                              const tableId = orderContext.tableId;
+                              if (!tableId) return;
 
-                              updateTableStatus(
-                                tableId,
-                                orderContext.section || "TAKEAWAY",
-                                orderContext.takeawayNo!,
-                                officialOrderId || targetOrderId,
-                                "SENT",
-                                new Date().toISOString(),
-                                undefined,
-                                payableAmount,
-                              );
+                              setIsCheckingOut(true);
+                              try {
+                                const targetOrderId = activeOrder?.orderId || currentTableOrderId || "NEW";
+                                const officialOrderId = await saveCartHelper(tableId, targetOrderId, true);
 
-                              await useCartStore.getState().fetchCartFromDB(tableId);
-                              await useActiveOrdersStore.getState().fetchActiveKitchenOrders();
+                                updateTableStatus(
+                                  tableId,
+                                  orderContext.section || "TAKEAWAY",
+                                  orderContext.takeawayNo!,
+                                  officialOrderId || targetOrderId,
+                                  "SENT",
+                                  new Date().toISOString(),
+                                  undefined,
+                                  payableAmount,
+                                );
 
-                              router.push("/summary");
-                            } catch (err) {
-                              console.error("Takeaway Direct process to pay error:", err);
-                              showToast({ type: "error", message: "Error", subtitle: "Failed to process payment." });
-                            } finally {
-                              setIsCheckingOut(false);
-                            }
-                          } else {
+                                await useCartStore.getState().fetchCartFromDB(tableId);
+                                await useActiveOrdersStore.getState().fetchActiveKitchenOrders();
+
+                                router.push("/summary");
+                              } catch (err) {
+                                console.error("Takeaway Direct process to pay error:", err);
+                                showToast({ type: "error", message: "Error", subtitle: "Failed to process payment." });
+                              } finally {
+                                setIsCheckingOut(false);
+                              }
+                            }}
+                          >
+                            {isCheckingOut ? (
+                              <ActivityIndicator size="small" color="#fff" />
+                            ) : (
+                              <>
+                                <Ionicons name="card-outline" size={iconSize} color="#fff" />
+                                <Text style={styles.btnText}>Proceed to Pay</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        </>
+                      );
+                    } else {
+                      return (
+                        <TouchableOpacity
+                          style={[
+                            styles.proceedBtn,
+                            { flex: 1, backgroundColor: "#10B981" },
+                          ]}
+                          onPress={() => {
                             router.push("/summary");
-                          }
-                        }}
-                      >
-                        {isCheckingOut ? (
-                          <ActivityIndicator size="small" color="#fff" />
-                        ) : (
-                          <>
-                            <Ionicons name="card-outline" size={iconSize} color="#fff" />
-                            <Text style={styles.btnText}>Proceed to Pay</Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
-                    );
+                          }}
+                        >
+                          <Ionicons name="card-outline" size={iconSize} color="#fff" />
+                          <Text style={styles.btnText}>Proceed to Pay</Text>
+                        </TouchableOpacity>
+                      );
+                    }
                   }
                 }
 

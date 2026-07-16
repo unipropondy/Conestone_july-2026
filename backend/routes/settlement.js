@@ -10,12 +10,12 @@ router.get("/total-sales/:terminal", async (req, res) => {
     const pool = await poolPromise;
     const request = pool.request();
 
-    let dateFilter = "CAST(Start_Date AS DATE) = CAST(GETDATE() AS DATE)";
+    let dateFilter = "CAST(OrderDateTime AS DATE) = CAST(GETDATE() AS DATE)";
 
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
       const tDate = toDate.replace(/[^0-9T:.-]/g, '');
-      dateFilter = `CAST(Start_Date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      dateFilter = `CAST(OrderDateTime AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
     }
     console.log("🔥🔥🔥 TOTAL SALES ROUTE HIT NEW FILE,fromDate", fromDate);
     console.log("🔥🔥🔥 TOTAL SALES ROUTE HIT NEW FILE,toDate", toDate);
@@ -52,11 +52,11 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
     request.input("TerminalCode", sql.VarChar, req.params.terminal);
     request.input("UserId", sql.VarChar, req.params.userId);
 
-    let dateFilter = "CAST(Start_Date AS DATE) = CAST(GETDATE() AS DATE)";
+    let dateFilter = "CAST(PaymentCollectedOn AS DATE) = CAST(GETDATE() AS DATE)";
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
       const tDate = toDate.replace(/[^0-9T:.-]/g, '');
-      dateFilter = `CAST(Start_Date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      dateFilter = `CAST(PaymentCollectedOn AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
     }
 
     const result = await request.query(`
@@ -132,7 +132,7 @@ router.get("/sales-summary/:terminal", async (req, res) => {
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
       const tDate = toDate.replace(/[^0-9T:.-]/g, '');
-      dateFilter = `AND CAST(Start_Date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      dateFilter = `AND CAST(PaymentCollectedOn AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
     }
 
     const result = await request.query(`
@@ -197,11 +197,10 @@ router.post("/settlement", async (req, res) => {
           SettlementId,
           TerminalCode,
           CreatedBy,
-          CreatedOn,
-          Start_Date
+          CreatedOn
         )
         OUTPUT INSERTED.SettlementId
-        VALUES (NEWID(), @TerminalCode, @UserId, GETDATE(), (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))
+        VALUES (NEWID(), @TerminalCode, @UserId, GETDATE())
       `);
 
     const settlementId = result.recordset[0].SettlementId;

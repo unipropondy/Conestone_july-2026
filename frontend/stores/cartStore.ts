@@ -55,6 +55,7 @@ export type CartItem = {
   isServiceCharge?: number | boolean;
   isCombo?: boolean;
   comboSelections?: any[];
+  IsDiscountAllowed?: number | boolean;
 };
 
 export type DiscountInfo = {
@@ -241,6 +242,9 @@ const normalizeCartItem = (item: any, fallback: Partial<CartItem> = {}): CartIte
     isServiceCharge: item.isServiceCharge !== undefined ? item.isServiceCharge : (fallback.isServiceCharge !== undefined ? fallback.isServiceCharge : 0),
     isCombo: getNormalizedBoolean(item.isCombo, item.IsCombo, item.ComboDetailsJSON, fallback.isCombo),
     comboSelections: incomingComboSelections || _comboGroups || fallback.comboSelections || undefined,
+    IsDiscountAllowed: item.IsDiscountAllowed !== undefined ? item.IsDiscountAllowed : (fallback.IsDiscountAllowed !== undefined ? fallback.IsDiscountAllowed : 1),
+    discountAmount: Number(item.discount ?? item.discountAmount ?? item.DiscountAmount ?? fallback.discountAmount ?? discount),
+    discountType: item.discountType || item.DiscountType || fallback.discountType || "percentage",
   };
 };
 
@@ -331,10 +335,13 @@ type CartState = {
       oil?: string;
       sugar?: string;
       discount?: number;
-      isTakeaway?: boolean;
+      discountAmount?: number;
+      discountType?: string;
       isVoided?: boolean;
+      isTakeaway?: boolean;
     },
   ) => void;
+  applyBulkItemDiscount: (value: number, type: "percentage" | "fixed") => void;
 
   syncCartWithDB: (contextId: string, isImmediate?: boolean) => Promise<void>;
   fetchCartFromDB: (tableId: string) => Promise<void>;
@@ -825,12 +832,35 @@ export const useCartStore = create<CartState>()(
           const newLastLocalUpdate = { ...state.lastLocalUpdate };
           const newLastServerSync = { ...state.lastServerSync };
 
-          // 🚀 Comprehensive cleanup for ALL contexts related to this table
-          Object.keys(newCarts).forEach(ctx => { if (ctx.includes(tableId)) delete newCarts[ctx]; });
-          Object.keys(newDiscounts).forEach(ctx => { if (ctx.includes(tableId)) delete newDiscounts[ctx]; });
+          // 🚀 Clean up tableOrderIds
           delete newTableOrderIds[tableId];
-          Object.keys(newLastLocalUpdate).forEach(ctx => { if (ctx.includes(tableId)) delete newLastLocalUpdate[ctx]; });
-          Object.keys(newLastServerSync).forEach(ctx => { if (ctx.includes(tableId)) delete newLastServerSync[ctx]; });
+
+          // 🚀 Find table section & tableNo to also match suffix contextIds (e.g. DINE_IN_SECTION_1_5)
+          const { useTableStatusStore } = require("./tableStatusStore");
+          const tables = useTableStatusStore.getState().tables || [];
+          const cleanTargetId = String(tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+          const targetTable = tables.find((t: any) => {
+            const tId = String(t.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+            return tId === cleanTargetId;
+          });
+
+          const matchContextSuffixes: string[] = [];
+          if (targetTable) {
+            matchContextSuffixes.push(`_${targetTable.section}_${targetTable.tableNo}`);
+            matchContextSuffixes.push(`_${targetTable.tableNo}`);
+          }
+
+          const matchKey = (ctx: string) => {
+            const matchesId = ctx.includes(tableId);
+            const matchesSuffix = matchContextSuffixes.some(suffix => ctx.endsWith(suffix));
+            return matchesId || matchesSuffix;
+          };
+
+          // 🚀 Comprehensive cleanup for ALL matching contexts
+          Object.keys(newCarts).forEach(ctx => { if (matchKey(ctx)) delete newCarts[ctx]; });
+          Object.keys(newDiscounts).forEach(ctx => { if (matchKey(ctx)) delete newDiscounts[ctx]; });
+          Object.keys(newLastLocalUpdate).forEach(ctx => { if (matchKey(ctx)) delete newLastLocalUpdate[ctx]; });
+          Object.keys(newLastServerSync).forEach(ctx => { if (matchKey(ctx)) delete newLastServerSync[ctx]; });
 
           if (__DEV__) console.log(`🧹 [CartStore] Table session cleared: ${tableId}`);
 
@@ -920,6 +950,17 @@ export const useCartStore = create<CartState>()(
             lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
           };
         });
+
+        const tableId = useOrderContextStore.getState().currentOrder?.tableId;
+        if (tableId) {
+          socket.emit("cart_change", {
+            tableId,
+            contextId: currentContextId,
+            items: get().carts[currentContextId] || [],
+            lastUpdate: Date.now()
+          });
+        }
+
         get().syncCartWithDB(currentContextId);
       },
 
@@ -948,6 +989,16 @@ export const useCartStore = create<CartState>()(
           };
         });
 
+        const tableId = useOrderContextStore.getState().currentOrder?.tableId;
+        if (tableId) {
+          socket.emit("cart_change", {
+            tableId,
+            contextId: currentContextId,
+            items: get().carts[currentContextId] || [],
+            lastUpdate: Date.now()
+          });
+        }
+
         get().syncCartWithDB(currentContextId);
       },
 
@@ -962,6 +1013,17 @@ export const useCartStore = create<CartState>()(
           },
           lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
         }));
+
+        const tableId = useOrderContextStore.getState().currentOrder?.tableId;
+        if (tableId) {
+          socket.emit("cart_change", {
+            tableId,
+            contextId: currentContextId,
+            items: get().carts[currentContextId] || [],
+            lastUpdate: Date.now()
+          });
+        }
+
         get().syncCartWithDB(currentContextId);
       },
 
@@ -976,6 +1038,17 @@ export const useCartStore = create<CartState>()(
           },
           lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
         }));
+
+        const tableId = useOrderContextStore.getState().currentOrder?.tableId;
+        if (tableId) {
+          socket.emit("cart_change", {
+            tableId,
+            contextId: currentContextId,
+            items: get().carts[currentContextId] || [],
+            lastUpdate: Date.now()
+          });
+        }
+
         get().syncCartWithDB(currentContextId);
       },
 
@@ -1024,6 +1097,44 @@ export const useCartStore = create<CartState>()(
           };
         });
         
+        const tableId = useOrderContextStore.getState().currentOrder?.tableId;
+        if (tableId) {
+          socket.emit("cart_change", { 
+            tableId, 
+            contextId: currentContextId, 
+            items: get().carts[currentContextId], 
+            lastUpdate: Date.now() 
+          });
+        }
+
+        get().syncCartWithDB(currentContextId, true);
+      },
+
+      applyBulkItemDiscount: (value, type) => {
+        const { currentContextId } = get();
+        if (!currentContextId) return;
+
+        set((state) => {
+          const currentCart = state.carts[currentContextId] || [];
+          const updatedCart = currentCart.map((item) => {
+            const isAllowed = item.IsDiscountAllowed === true || item.IsDiscountAllowed === 1 || Number(item.IsDiscountAllowed) === 1;
+            if (isAllowed) {
+              return {
+                ...item,
+                discount: value,
+                discountAmount: value,
+                discountType: type,
+              };
+            }
+            return item;
+          });
+
+          return {
+            carts: { ...state.carts, [currentContextId]: updatedCart },
+            lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
+          };
+        });
+
         const tableId = useOrderContextStore.getState().currentOrder?.tableId;
         if (tableId) {
           socket.emit("cart_change", { 
@@ -1277,6 +1388,12 @@ export const useCartStore = create<CartState>()(
                   discount: isRecentlyEdited 
                     ? (localMatch.discount ?? dbItem.discount) 
                     : (dbItem.discount ?? localMatch.discount ?? 0),
+                  discountAmount: isRecentlyEdited 
+                    ? (localMatch.discountAmount ?? dbItem.discountAmount ?? localMatch.discount) 
+                    : (dbItem.discountAmount ?? localMatch.discountAmount ?? dbItem.discount ?? 0),
+                  discountType: isRecentlyEdited 
+                    ? (localMatch.discountType ?? dbItem.discountType) 
+                    : (dbItem.discountType ?? localMatch.discountType ?? "percentage"),
                   modifiers: localMatch.modifiers,
                   status: finalStatus,
                   sent: finalSent

@@ -60,6 +60,7 @@ const yeahpayRoutes = require('./routes/yeahpay');
 const loyaltyRoutes = require("./routes/loyalty");
 const loyaltyConfigRoutes = require("./routes/loyaltyConfig");
 const comboRoutes = require("./routes/combo");
+const rewardRoutes = require("./routes/rewardRoutes");
 const http = require("http");
 const { Server } = require("socket.io");
 
@@ -179,8 +180,8 @@ async function pollTables() {
         const tableId = String(table.id).toLowerCase();
         const prevState = previousTablesState.get(tableId);
 
-        const hasChanged = !prevState ||
-          prevState.status !== table.Status ||
+        const hasChanged = !prevState || 
+          prevState.status !== table.Status || 
           prevState.entryStatus !== table.entryStatus ||
           prevState.totalAmount !== table.totalAmount ||
           prevState.lockedByName !== table.lockedByName ||
@@ -274,7 +275,7 @@ app.use('/api/yeahpay', yeahpayRoutes);
 app.use("/api/loyalty", loyaltyRoutes);
 app.use("/api/loyalty/configs", loyaltyConfigRoutes);
 app.use("/api/combo", comboRoutes);
-app.use("/api/date-entry", require("./routes/dateEntry"));
+app.use("/api/rewards", rewardRoutes);
 const cashDrawerRouter = require("./routes/cashDrawer");
 app.use("/api/cash-drawer", cashDrawerRouter);
 const printJobsRouter = require("./routes/printJobs");
@@ -295,7 +296,7 @@ const aiApiLimiter = rateLimit({
 const authenticateAiToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-
+  
   if (!token) {
     req.user = { shop_id: 1, role: 'ADMIN', username: 'TestOwner', user_id: 1 };
     return next();
@@ -370,7 +371,7 @@ setInterval(async () => {
   try {
     const pool = await poolPromise;
     if (!pool || !pool.connected) return;
-
+    
     // 1. Close orders for tables that are marked as Available (Status 0)
     const result = await pool.request().query(`
       UPDATE RestaurantOrderCur 
@@ -383,7 +384,7 @@ setInterval(async () => {
       )
       AND CreatedOn < DATEADD(MINUTE, -5, GETDATE()); -- Optimized to allow index usage
     `);
-
+    
     if (result.recordset || result.rowsAffected[0] > 0) {
       const affected = result.rowsAffected[0] || 0;
       console.log(`🧹 [Janitor] Cleared ${affected} orphan orders.`);
@@ -410,7 +411,7 @@ function logDiagnostics(label = "Interval") {
     const mem = process.memoryUsage();
     const { activeTransactions } = require("./utils/transactionHelper");
     const { getPool } = require("./config/db");
-
+    
     const pool = getPool();
     const poolStats = pool && pool.pool ? {
       used: pool.pool.used.length,

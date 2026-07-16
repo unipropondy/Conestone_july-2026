@@ -1,15 +1,16 @@
 import * as net from 'net';
+import { logger } from './logger';
 
 /**
  * Parses tags like [C], [L], [R], <B>, </B>, <font size='big'> to ESC/POS binary buffers.
  */
 function parseFormatting(content: string): Buffer {
   const chunks: Buffer[] = [];
-
+  
   // Tag translation regex
   const tagRegex = /(\[C\]|\[L\]|\[R\]|<\/?B>|<font size='big'>|<font size='normal'>|<\/font>)/gi;
   const parts = content.split(tagRegex);
-
+  
   for (const part of parts) {
     if (!part) continue;
     const lower = part.toLowerCase();
@@ -31,10 +32,10 @@ function parseFormatting(content: string): Buffer {
       chunks.push(Buffer.from(part, 'utf-8'));
     }
   }
-
+  
   // Append line feeds and paper cut command (GS V 66 0)
   chunks.push(Buffer.from([0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00]));
-
+  
   return Buffer.concat(chunks);
 }
 
@@ -92,7 +93,7 @@ export async function sendToPrinter(ip: string, port: number, content: string, j
     client.setTimeout(timeoutVal);
 
     let payload: Buffer;
-
+    
     // Quick heuristic to check if content is base64 encoded binary
     const trimmed = content.trim();
     const isBase64 = /^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) && (trimmed.length % 4 === 0);

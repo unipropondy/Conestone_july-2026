@@ -10,6 +10,7 @@ import { formatToSingaporeDate, formatToSingaporeTime, formatToSingaporeDateTime
 import BillPDFGenerator from "./BillPDFGenerator";
 import { PrinterDetector } from "./PrinterDetector";
 import SunmiPrinterService from "./SunmiPrinterService";
+import { useCompanySettingsStore } from "../stores/companySettingsStore";
 
 // Printer types
 export type PrinterType =
@@ -105,144 +106,6 @@ class UniversalPrinter {
     }
     this.printedReceiptsCache.set(orderId, now);
     return false;
-  }
-
-  // ==================== SHARED KITCHEN PRINT PIPELINE ====================
-  /**
-   * routeAndPrintOrderKOT
-   *
-   * Single source of truth for kitchen routing and printing.
-   * Called by BOTH the cashier "Send to Kitchen" flow (CartSidebar.tsx)
-   * and the automatic QR-order socket flow (useGlobalSocketSync.ts).
-   *
-   * Responsibilities:
-   *  - Expand combo sub-items across kitchen boundaries
-   *  - Group items by KitchenTypeCode / PrinterIP
-   *  - Print one KOT per kitchen group (TCP / Sunmi / fallback)
-   *  - Optionally print a KDS backup copy
-   *
-   * This method MUST NOT:
-   *  - Call any backend API
-   *  - Emit socket events
-   *  - Update React / Zustand state
-   *  - Navigate or display toasts
-   *
-   * @param orderId        The order identifier (used for print logging)
-   * @param orderContext   { orderType, tableNo, takeawayNo, section } – same shape used by CartSidebar
-   * @param items          Array of cart/order items with KitchenTypeCode and PrinterIP resolved
-   * @param isAdditional   true if some items in the cart were already SENT (additional KOT)
-   * @param waiterName     Staff name to print on the KOT
-   * @param skipDuplicateGuard  Pass true from the cashier manual flow to bypass the cache check
-   */
-  static async routeAndPrintOrderKOT(
-    orderId: string,
-    orderContext: { orderType?: string; tableNo?: string; takeawayNo?: string; section?: string },
-    items: any[],
-    isAdditional: boolean = false,
-    waiterName: string = "Staff",
-    skipDuplicateGuard: boolean = false
-  ): Promise<boolean> {
-    try {
-      // 1. Duplicate-print guard (QR socket path only; cashier path passes skipDuplicateGuard=true)
-      // Pass the raw items (pre-expansion) so the fingerprint reflects what the backend sent.
-      if (!skipDuplicateGuard && this.isDuplicatePrint(orderId, items)) {
-        return false;
-      }
-
-      // 2. Check enableKOT setting (same setting the cashier flow checks)
-      const { useGeneralSettingsStore } = await import("../stores/generalSettingsStore");
-      const { enableKOT, enableKDSPrint } = useGeneralSettingsStore.getState().settings;
-      if (!enableKOT) {
-        if (__DEV__) console.log("🖨️ [UniversalPrinter] KOT printing is disabled in General Settings.");
-        return false;
-      }
-
-      // 3. Expand combo sub-items that belong to a different kitchen
-      const expandedItems: any[] = [];
-      items.forEach((item: any) => {
-        expandedItems.push(item);
-        if (item.comboSelections && item.comboSelections.length > 0) {
-          item.comboSelections.forEach((g: any) => {
-            if (Array.isArray(g.items)) {
-              g.items.forEach((opt: any) => {
-                const optKitchenCode =
-                  opt.KitchenTypeCode || opt.kitchenCode || opt.kitchenTypeCode;
-                const parentKitchenCode =
-                  item.KitchenTypeCode || item.kitchenCode || item.kitchenTypeCode || "0";
-                if (optKitchenCode && optKitchenCode !== parentKitchenCode) {
-                  expandedItems.push({
-                    ...opt,
-                    id: opt.dishId,
-                    qty: item.quantity || item.qty || 1,
-                    price: 0,
-                    name: `${opt.name} (Combo - ${item.name})`,
-                    KitchenTypeCode: optKitchenCode,
-                    KitchenTypeName: opt.KitchenTypeName || opt.kitchenTypeName,
-                    PrinterIP: opt.PrinterIP || opt.printerIp,
-                  });
-                }
-              });
-            }
-          });
-        }
-      });
-
-      // 4. Group by KitchenTypeCode → one KOT per kitchen
-      const kitchenGroups: Record<string, any[]> = {};
-      expandedItems.forEach((item: any) => {
-        const kCode = item.KitchenTypeCode || "0";
-        if (!kitchenGroups[kCode]) kitchenGroups[kCode] = [];
-        kitchenGroups[kCode].push(item);
-      });
-
-      // 5. Print one KOT per kitchen group
-      const tableNo =
-        orderContext.orderType === "DINE_IN"
-          ? orderContext.tableNo
-          : `TW-${orderContext.takeawayNo}`;
-
-      for (const [kCode, groupItems] of Object.entries(kitchenGroups)) {
-        const printerIp = groupItems[0].PrinterIP;
-        const kotData = {
-          orderId,
-          orderNo: orderId,
-          tableNo,
-          waiterName,
-          items: groupItems,
-          kitchenName:
-            groupItems[0].KitchenTypeName || (kCode === "0" ? "KITCHEN" : kCode),
-          kitchenCode: kCode,
-        };
-        await this.printKOT(
-          kotData,
-          "SYSTEM",
-          isAdditional ? "ADDITIONAL" : "NEW",
-          printerIp
-        );
-      }
-
-      // 6. KDS backup copy (respects enableKDSPrint setting)
-      if (enableKDSPrint !== false) {
-        try {
-          const kdsData = {
-            orderId,
-            orderNo: orderId,
-            tableNo,
-            waiterName,
-            items,
-            kitchenName: "KDS",
-          };
-          await this.printKDSOrder(kdsData, "SYSTEM");
-        } catch (kdsErr) {
-          console.error("[UniversalPrinter] KDS backup print failed:", kdsErr);
-        }
-      }
-
-      return true;
-    } catch (err) {
-      console.error("[UniversalPrinter] routeAndPrintOrderKOT error:", err);
-      return false;
-    }
   }
 
   static async detectAllPrinters(): Promise<PrinterInfo[]> {
@@ -870,66 +733,71 @@ class UniversalPrinter {
       }
 
       // ✅ 1. Try Hardware Printer (WiFi or Bluetooth)
-      let isReachable = false;
-      const isIp = targetIp && /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(targetIp.trim());
-      if (isIp) {
-        isReachable = await this.isIpReachable(targetIp);
-      } else if (targetIp && targetIp.trim().length > 0) {
-        isReachable = true;
-      }
-
-      if (isReachable) {
-        try {
-          const text = this.formatKOTThermalText(orderData, type);
-
-          if (isIp) {
-            console.log(`🌐 KOT WiFi print to: ${targetIp}`);
-            const printPromise = ThermalPrinter.printTcp({
-              ip: targetIp,
-              port: 9100,
-              payload: text,
-              mmFeedPaper: 60,
-            });
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(() => reject(new Error("WiFi Timeout")), 1500),
-            );
-            await Promise.race([printPromise, timeoutPromise]);
-          } else {
-            console.log(`🔵 KOT Bluetooth print to: ${targetIp}`);
-            const printPromise = ThermalPrinter.printBluetooth({
-              macAddress: targetIp,
-              payload: text,
-              mmFeedPaper: 60,
-            });
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(() => reject(new Error("BT Timeout")), 3000),
-            );
-            await Promise.race([printPromise, timeoutPromise]);
-          }
-          await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
-          return true;
-        } catch (printError) {
-          console.warn("❌ Hardware KOT failed/timeout, falling back...");
+      const hasConfiguredIp = targetIp && targetIp.trim().length > 0;
+      if (hasConfiguredIp) {
+        let isReachable = false;
+        const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(targetIp.trim());
+        if (isIp) {
+          isReachable = await this.isIpReachable(targetIp);
+        } else {
+          isReachable = true;
         }
-      }
 
-      // ✅ 2. Try Sunmi direct print (Silent)
-      const sunmiReady = await SunmiPrinterService.init().catch(() => false);
-      if (sunmiReady) {
-        try {
-          const printPromise = SunmiPrinterService.printKOT(orderData, type);
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Sunmi Timeout")), 2000),
-          );
-          const printed = await Promise.race([printPromise, timeoutPromise]);
+        if (isReachable) {
+          try {
+            const text = this.formatKOTThermalText(orderData, type);
 
-          if (printed) {
-            console.log("✅ KOT Printed with Sunmi - NO PREVIEW");
+            if (isIp) {
+              console.log(`🌐 KOT WiFi print to: ${targetIp}`);
+              const printPromise = ThermalPrinter.printTcp({
+                ip: targetIp,
+                port: 9100,
+                payload: text,
+                mmFeedPaper: 60,
+              });
+              const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("WiFi Timeout")), 1500),
+              );
+              await Promise.race([printPromise, timeoutPromise]);
+            } else {
+              console.log(`🔵 KOT Bluetooth print to: ${targetIp}`);
+              const printPromise = ThermalPrinter.printBluetooth({
+                macAddress: targetIp,
+                payload: text,
+                mmFeedPaper: 60,
+              });
+              const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("BT Timeout")), 3000),
+              );
+              await Promise.race([printPromise, timeoutPromise]);
+            }
             await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
             return true;
+          } catch (printError) {
+            console.warn("❌ Hardware KOT failed/timeout, falling back directly to PDF...");
           }
-        } catch (sunmiErr) {
-          console.warn("❌ Sunmi KOT failed/timeout:", sunmiErr);
+        } else {
+          console.warn(`❌ configured printer IP ${targetIp} not reachable, falling back directly to PDF...`);
+        }
+      } else {
+        // ✅ 2. Try Sunmi direct print (Silent) (Only if IP is NOT entered)
+        const sunmiReady = await SunmiPrinterService.init().catch(() => false);
+        if (sunmiReady) {
+          try {
+            const printPromise = SunmiPrinterService.printKOT(orderData, type);
+            const timeoutPromise = new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("Sunmi Timeout")), 2000),
+            );
+            const printed = await Promise.race([printPromise, timeoutPromise]);
+
+            if (printed) {
+              console.log("✅ KOT Printed with Sunmi - NO PREVIEW");
+              await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
+              return true;
+            }
+          } catch (sunmiErr) {
+            console.warn("❌ Sunmi KOT failed/timeout:", sunmiErr);
+          }
         }
       }
 
@@ -1048,16 +916,16 @@ class UniversalPrinter {
           }
           
           .item-qty {
-            font-size: 20px;
-            font-weight: 600;
+            font-size: 24px;
+            font-weight: 900;
             width: 50px;
             line-height: 1;
             margin-right: 8px;
           }
           
           .item-name {
-            font-size: 16px;
-            font-weight: 600;
+            font-size: 22px;
+            font-weight: 900;
             flex: 1;
             line-height: 1.1;
           }
@@ -1068,15 +936,16 @@ class UniversalPrinter {
           }
           
           .modifier-item {
-            font-size: 18px;
-            font-weight: bold;
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
             display: block;
           }
           
           .remarks {
             margin-left: 58px;
-            font-size: 16px;
-            font-weight: bold;
+            font-size: 15px;
+            font-weight: 700;
             font-style: italic;
             margin-top: 4px;
           }
@@ -1146,13 +1015,13 @@ class UniversalPrinter {
                           <div class="item-main">
                             <div class="item-qty">${item.quantity || item.qty || 1}</div>
                             <div class="item-name">
-                              ${item.name}
+                              ${(item.name || "").replace(/\n/g, '<br/>')}
                               ${item.songName || item.SongName ? `<div style="font-size: 20px; font-weight: normal; color: #555; margin-top: 4px;">🎵 ${item.songName || item.SongName}</div>` : ''}
                             </div>
                           </div>
                           ${
                             item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway
-                              ? `<div class="modifier-list"><span class="modifier-item" style="font-weight: bold;">- Takeaway</span></div>`
+                              ? `<div class="modifier-list"><span class="modifier-item" style="font-size: 20px; font-weight: 900; color: #000;">- Takeaway</span></div>`
                               : ""
                           }
                           ${
@@ -1163,7 +1032,7 @@ class UniversalPrinter {
                           ${
                             hasCombo
                               ? `<div class="modifier-list">${comboSels.map((g: any) => `
-                                  <div style="font-weight: bold; margin-top: 2px;">${g.groupName}:</div>
+                                  <div style="font-weight: bold; margin-top: 2px; font-size: 15px; color: #555;">${g.groupName}:</div>
                                   ${g.items?.map((opt: any) => `<span class="modifier-item" style="padding-left: 10px;">↳ ${opt.name}</span>`).join("")}
                                 `).join("")}</div>`
                               : ""
@@ -1189,7 +1058,7 @@ class UniversalPrinter {
                     <div class="item-main">
                       <div class="item-qty">${item.quantity || item.qty || 1}</div>
                       <div class="item-name">
-                        ${item.name}
+                        ${(item.name || "").replace(/\n/g, '<br/>')}
                         ${item.songName || item.SongName ? `<div style="font-size: 20px; font-weight: normal; color: #555; margin-top: 4px;">🎵 ${item.songName || item.SongName}</div>` : ''}
                       </div>
                     </div>
@@ -1200,7 +1069,7 @@ class UniversalPrinter {
                       item.IsTakeAway
                         ? `
                       <div class="modifier-list">
-                        <span class="modifier-item" style="font-weight: bold;">- Takeaway</span>
+                        <span class="modifier-item" style="font-size: 20px; font-weight: 900; color: #000;">- Takeaway</span>
                       </div>
                     `
                         : ""
@@ -1227,7 +1096,7 @@ class UniversalPrinter {
                         ${comboSels
                           .map(
                             (g: any) => `
-                          <div style="font-weight: bold; margin-top: 2px;">${g.groupName}:</div>
+                          <div style="font-weight: bold; margin-top: 2px; font-size: 15px; color: #555;">${g.groupName}:</div>
                           ${g.items?.map((opt: any) => `<span class="modifier-item" style="padding-left: 10px;">↳ ${opt.name}</span>`).join("")}
                         `,
                           )
@@ -1305,7 +1174,14 @@ class UniversalPrinter {
         groupItems.forEach((item: any) => {
           const qtyNum = item.quantity || item.qty || 1;
           const itemName = item.name || item.DishName || "";
-          text += `[L]<font size='big'>[${qtyNum}] ${itemName}</font>\n`;
+          const lines = itemName.split("\n");
+          lines.forEach((line: string, idx: number) => {
+            if (idx === 0) {
+              text += `[L]<font size='big'>[${qtyNum}] ${line}</font>\n`;
+            } else {
+              text += `[L]<font size='big'>    ${line}</font>\n`;
+            }
+          });
 
           const songName = item.songName || item.SongName || "";
           if (songName) {
@@ -1319,7 +1195,7 @@ class UniversalPrinter {
             item.IsTakeAway
           );
           if (isTw) {
-            text += `[L]    - Takeaway\n`;
+            text += `[L]    <B>- Takeaway</B>\n`;
           }
 
           if (item.modifiers && item.modifiers.length > 0) {
@@ -1349,9 +1225,14 @@ class UniversalPrinter {
       items.forEach((item: any) => {
         const qtyNum = item.quantity || item.qty || 1;
         const itemName = item.name || item.DishName || "";
-
-        // 🚀 Square brackets [1] make quantity very clear and avoid alignment drift
-        text += `[L]<font size='big'>[${qtyNum}] ${itemName}</font>\n`;
+        const lines = itemName.split("\n");
+        lines.forEach((line: string, idx: number) => {
+          if (idx === 0) {
+            text += `[L]<font size='big'>[${qtyNum}] ${line}</font>\n`;
+          } else {
+            text += `[L]<font size='big'>    ${line}</font>\n`;
+          }
+        });
 
         const songName = item.songName || item.SongName || "";
         if (songName) {
@@ -1365,7 +1246,7 @@ class UniversalPrinter {
           item.IsTakeAway
         );
         if (isTw) {
-          text += `[L]    - Takeaway\n`;
+          text += `[L]    <B>- Takeaway</B>\n`;
         }
 
         if (item.modifiers && item.modifiers.length > 0) {
@@ -1412,14 +1293,12 @@ class UniversalPrinter {
     discountInfo?: DiscountInfo,
     preferredType?: PrinterType,
     isReprint: boolean = false,
-    skipPreview: boolean = false,
   ): Promise<boolean> {
     if (Platform.OS === "web") {
       try {
         const isOnline = await this.isBridgeOnline();
         if (!isOnline) {
           console.log("📡 [Web Print Bridge] Bridge is OFFLINE. Direct fallback to preview.");
-          if (skipPreview) return false;
           return await this.offerPDFFallback(saleData, outletId, t, discountInfo);
         }
 
@@ -1443,11 +1322,9 @@ class UniversalPrinter {
 
         // 🚀 Fallback: If Print Bridge failed or printer not detected on web, trigger iframe print preview immediately
         console.log("⚠️ [Web Receipt Print] Print Bridge queue failed. Falling back to iframe print preview.");
-        if (skipPreview) return false;
         return await this.offerPDFFallback(saleData, outletId, t, discountInfo);
       } catch (err) {
         console.warn("[Web Print Bridge] Receipt Queue failed, falling back to iframe print preview:", err);
-        if (skipPreview) return false;
         return await this.offerPDFFallback(saleData, outletId, t, discountInfo);
       }
     }
@@ -1530,10 +1407,6 @@ class UniversalPrinter {
               console.log("WiFi failed/timeout:", err);
             }
           }
-          if (skipPreview) {
-            console.log(`❌ LAN print failed for IP ${targetIp}. Silent failure requested.`);
-            return;
-          }
           Alert.alert(
             "Printer Connection Error",
             `Could not connect to the configured LAN/Wi-Fi printer at ${targetIp}. Opening print preview...`,
@@ -1558,109 +1431,14 @@ class UniversalPrinter {
 
         // Fallback to PDF/Web (Guaranteed)
         console.log("🔄 Fallback to PDF Preview");
-        if (skipPreview) {
-          console.log("❌ Built-in print failed. Silent failure requested.");
-          return;
-        }
         await this.offerPDFFallback(saleData, outletId, t, discountInfo);
       } catch (error) {
         console.log("SmartPrint error:", error);
-        if (skipPreview) {
-          console.log("❌ SmartPrint exception. Silent failure requested.");
-          return;
-        }
         await this.offerPDFFallback(saleData, outletId, t, discountInfo);
       }
     })();
 
     return true;
-  }
-
-  // ==================== AUTO RECEIPT PRINT PIPELINE ====================
-  /**
-   * printReceiptAuto
-   *
-   * Automatically prints receipt for online-paid QR orders on order_closed.
-   * Maps backend settlement DTO (header, items, payments) to saleData and discountInfo,
-   * then calls smartPrint with skipPreview=true to print silently.
-   */
-  static async printReceiptAuto(settlementData: {
-    header: any;
-    items: any[];
-    payments: any[];
-  }): Promise<boolean> {
-    try {
-      const { header, items, payments } = settlementData;
-      const orderId = header.OrderId || header.BillNo;
-
-      if (!orderId) {
-        console.warn("[UniversalPrinter] Cannot auto-print receipt: missing OrderId");
-        return false;
-      }
-
-      if (this.isDuplicateReceiptPrint(orderId)) {
-        return false;
-      }
-
-      const mappedItems = items.map((item: any) => ({
-        name: item.DishName || item.name,
-        price: Number(item.Price || 0),
-        qty: Number(item.Qty || item.qty || 1),
-        status: item.Status || "NORMAL",
-        discountAmount: Number(item.DiscountAmount || 0),
-        discountType: item.DiscountType || "fixed",
-        modifiers: item.modifiers || [],
-      }));
-
-      const isPercentage = header.DiscountType === "percentage";
-      const discountValue = isPercentage
-        ? Number(header.DiscountPercentage ?? 0)
-        : Number(header.DiscountAmount ?? 0);
-
-      const discountInfo = {
-        applied: Number(header.DiscountAmount ?? 0) > 0,
-        type: (header.DiscountType || "fixed") as "fixed" | "percentage",
-        value: discountValue,
-        amount: Number(header.DiscountAmount ?? 0),
-        subtotal: Number(header.SubTotal ?? 0),
-      };
-
-      const saleData = {
-        invoiceNumber: header.BillNo || orderId,
-        tableNo: header.TableNo ?? "",
-        total: Number(header.SysAmount || 0),
-        paymentMethod: header.PayMode || "CASH",
-        cashPaid: Number(header.SysAmount || 0),
-        change: 0,
-        items: mappedItems,
-        roundOff: Number(header.RoundedBy ?? 0),
-        date: header.SettlementDate || new Date(),
-        isReprint: false,
-        isCheckout: true,
-        // Sunmi template details
-        discountAmount: Number(header.DiscountAmount ?? 0),
-        discountType: header.DiscountType || null,
-        discountValue: discountValue,
-        subTotal: Number(header.SubTotal ?? 0),
-        serviceCharge: Number(header.ServiceCharge ?? 0),
-        payments: payments.map((p: any) => ({
-          payMode: p.payMode || p.payModeName,
-          payModeName: p.payModeName || p.payMode,
-          amount: Number(p.amount || 0),
-          referenceNo: p.referenceNo || ""
-        })),
-        waiterName: header.SER_NAME || "QR System"
-      };
-
-      const AsyncStorage = require("@react-native-async-storage/async-storage").default;
-      const userId = (await AsyncStorage.getItem("userId")) || "1";
-
-      console.log(`🖨️ [UniversalPrinter] Triggering silent receipt print for: ${orderId}`);
-      return await this.smartPrint(saleData, userId, {}, discountInfo, undefined, false, true);
-    } catch (err) {
-      console.error("[UniversalPrinter] printReceiptAuto error:", err);
-      return false;
-    }
   }
 
   /**
@@ -1875,6 +1653,10 @@ class UniversalPrinter {
     if (saleData.waiterName && saleData.waiterName !== "Staff") {
       text += `[L]Waiter: ${saleData.waiterName}\n`;
     }
+    // 🏆 Print Member Mobile Number on receipt
+    if (saleData.mobileNo) {
+      text += `[L]Member Phone: ${saleData.mobileNo}\n`;
+    }
     text += "[L]------------------------------------------------\n";
 
     // Items Header
@@ -1885,7 +1667,10 @@ class UniversalPrinter {
       (i: any) => i.status !== "VOIDED",
     );
     const activeItems = (saleData.items || []).filter((i: any) => i.status !== "VOIDED" && i.statusCode !== 0);
-    const allItemsHaveSC = activeItems.length > 0 && activeItems.every((item: any) => Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+    const allItemsHaveSC = activeItems.length > 0 && activeItems.every((item: any) => {
+      const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      return !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+    });
 
     printItems.forEach((item: any) => {
       // 🛡️ Robust field mapping
@@ -1915,7 +1700,8 @@ class UniversalPrinter {
         text += `[L]   ${item.name}\n`;
       }
 
-      const isSC = Number(item.isServiceCharge) === 1 || item.isServiceCharge === true;
+      const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
       if (isSC && !allItemsHaveSC) {
         text += `[L]   [Service Charge ${company.serviceChargePercentage}%]\n`;
       }
@@ -1937,10 +1723,13 @@ class UniversalPrinter {
       const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
       if (discAmt > 0) {
         const discType = item.discountType || "percentage";
+        const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+        const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
+        const effectiveDisc = discType === "percentage" ? discAmt : Math.min(discAmt, discountBasis);
         const discStr =
           discType === "percentage"
             ? `-${discAmt}%`
-            : `-${symbol}${discAmt.toFixed(2)}`;
+            : `-${symbol}${effectiveDisc.toFixed(2)}`;
         text += `[L]      Discount: ${discStr}\n`;
       }
     });
@@ -1954,15 +1743,17 @@ class UniversalPrinter {
     (saleData.items || []).forEach((item: any) => {
       if (item.status === "VOIDED") return;
       const qtyNum = parseInt(String(item.qty || item.quantity || 1)) || 1;
+      const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+      const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
       const baseTotal = (item.price || 0) * qtyNum;
       let itemDiscount = 0;
       const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
       const discType = item.discountType || "percentage";
       if (discAmt > 0) {
         if (discType === "percentage") {
-          itemDiscount = baseTotal * (discAmt / 100);
+          itemDiscount = (discountBasis * (discAmt / 100)) * qtyNum;
         } else {
-          itemDiscount = discAmt * qtyNum;
+          itemDiscount = Math.min(discAmt, discountBasis) * qtyNum;
         }
       }
       grossTotal += baseTotal;
@@ -2028,19 +1819,22 @@ class UniversalPrinter {
       (saleData.items || []).forEach((item: any) => {
         if (item.status === "VOIDED") return;
         const qtyNum = parseInt(String(item.qty || item.quantity || 1)) || 1;
+        const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+        const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
         const baseTotal = (item.price || 0) * qtyNum;
         let itemDiscount = 0;
         const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
         const discType = item.discountType || "percentage";
         if (discAmt > 0) {
           if (discType === "percentage") {
-            itemDiscount = baseTotal * (discAmt / 100);
+            itemDiscount = (discountBasis * (discAmt / 100)) * qtyNum;
           } else {
-            itemDiscount = discAmt * qtyNum;
+            itemDiscount = Math.min(discAmt, discountBasis) * qtyNum;
           }
         }
         const itemSubtotal = baseTotal - itemDiscount;
-        const isSC = Number(item.isServiceCharge) === 1 || item.isServiceCharge === true;
+        const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+        const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
         if (isSC) {
           scEligibleSubtotal += itemSubtotal;
         }
@@ -2060,7 +1854,27 @@ class UniversalPrinter {
     const effectiveSCPercentage = serviceChargeAmount > 0 && currentSubtotal > 0
       ? Math.round((serviceChargeAmount / currentSubtotal) * 100)
       : scPercentage;
-    const taxableAmount = currentSubtotal + serviceChargeAmount;
+
+    const companySettings = useCompanySettingsStore.getState().settings;
+    const takeawayRateFromSettings = companySettings?.takeawayCharges || 0;
+    let takeawayCharge = saleData.takeawayCharge !== undefined ? parseFloat(String(saleData.takeawayCharge)) : 0;
+    let takeawayQty = (saleData.items || []).reduce((sum: number, item: any) => {
+      const isTW = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      const isVoided = item.status === "VOIDED" || item.StatusCode === 0;
+      if (isTW && !isVoided) {
+        return sum + (item.qty || item.quantity || 1);
+      }
+      return sum;
+    }, 0);
+
+    if (takeawayQty === 0 && takeawayCharge > 0) {
+      const effectiveRate = takeawayRateFromSettings > 0 ? takeawayRateFromSettings : takeawayCharge;
+      takeawayQty = Math.round(takeawayCharge / effectiveRate) || 1;
+    } else if (takeawayQty > 0 && takeawayCharge === 0) {
+      takeawayCharge = takeawayQty * takeawayRateFromSettings;
+    }
+    const takeawayRate = takeawayQty > 0 ? (takeawayCharge / takeawayQty) : takeawayRateFromSettings;
+    const taxableAmount = currentSubtotal + serviceChargeAmount + takeawayCharge;
     const gstAmountRaw = hasGST ? taxableAmount * (gstRate / 100) : 0;
     const gstAmount = Math.round(gstAmountRaw * 100) / 100;
     
@@ -2078,6 +1892,10 @@ class UniversalPrinter {
 
     if (hasSC) {
       text += this.formatTwoCols48(allItemsHaveSC ? "Service Charge:" : "Item Service Charge:", `${symbol}${serviceChargeAmount.toFixed(2)}`);
+    }
+
+    if (takeawayCharge > 0) {
+      text += this.formatTwoCols48(`Takeaway Charges (${symbol}${takeawayRate.toFixed(2)}*${takeawayQty}):`, `${symbol}${takeawayCharge.toFixed(2)}`);
     }
 
     if (hasGST && gstAmount > 0) {
@@ -2109,6 +1927,16 @@ class UniversalPrinter {
 
     text += `[R]<font size=\'big\'><B>TOTAL: ${symbol}${finalTotal.toFixed(2)}</B></font>\n`;
     text += "[C]================================================\n";
+
+    // 🏆 Print Reward point transaction stats
+    if (parseFloat(saleData.rewardPointsEarned) > 0) {
+      text += `[L]Reward Points Earned: +$${parseFloat(saleData.rewardPointsEarned).toFixed(2)}\n`;
+    }
+    if (parseFloat(saleData.memberRewardBalance) > 0) {
+      text += `[L]Available Member Credit: $${parseFloat(saleData.memberRewardBalance).toFixed(2)}\n`;
+      text += "[C]------------------------------------------------\n";
+    }
+
     text += "[C]<B>THANK YOU! COME AGAIN!</B>\n";
     text += "[C]SMART-POS BY UNIPROSG\n\n\n\n";
 
@@ -2210,6 +2038,178 @@ class UniversalPrinter {
   // ==================== UTILITIES ====================
   private static async checkAndroidPrintService(): Promise<boolean> {
     return Platform.OS === "android";
+  }
+
+  static async routeAndPrintOrderKOT(
+    orderId: string,
+    orderContext: { orderType?: string; tableNo?: string; takeawayNo?: string; section?: string },
+    items: any[],
+    isAdditional: boolean = false,
+    waiterName: string = "Staff",
+    skipDuplicateGuard: boolean = false
+  ): Promise<boolean> {
+    try {
+      // 1. Duplicate-print guard (QR socket path only; cashier path passes skipDuplicateGuard=true)
+      // Pass the raw items (pre-expansion) so the fingerprint reflects what the backend sent.
+      if (!skipDuplicateGuard && this.isDuplicatePrint(orderId, items)) {
+        return false;
+      }
+
+      // 2. Check enableKOT setting (same setting the cashier flow checks)
+      const { useGeneralSettingsStore } = await import("../stores/generalSettingsStore");
+      const { enableKOT, enableKDSPrint } = useGeneralSettingsStore.getState().settings;
+      if (!enableKOT) {
+        if (__DEV__) console.log("🖨️ [UniversalPrinter] KOT printing is disabled in General Settings.");
+        return false;
+      }
+
+      // 3. Expand combo sub-items that belong to a different kitchen
+      const expandedItems: any[] = [];
+      items.forEach((item: any) => {
+        expandedItems.push(item);
+        if (item.comboSelections && item.comboSelections.length > 0) {
+          item.comboSelections.forEach((g: any) => {
+            if (Array.isArray(g.items)) {
+              g.items.forEach((opt: any) => {
+                const optKitchenCode =
+                  opt.KitchenTypeCode || opt.kitchenCode || opt.kitchenTypeCode;
+                const parentKitchenCode =
+                  item.KitchenTypeCode || item.kitchenCode || item.kitchenTypeCode || "0";
+                if (optKitchenCode && optKitchenCode !== parentKitchenCode) {
+                  expandedItems.push({
+                    ...opt,
+                    id: opt.dishId,
+                    qty: item.quantity || item.qty || 1,
+                    price: 0,
+                    name: `${opt.name}\n(Combo - ${item.name})`,
+                    KitchenTypeCode: optKitchenCode,
+                    KitchenTypeName: opt.KitchenTypeName || opt.kitchenTypeName,
+                    PrinterIP: opt.PrinterIP || opt.printerIp,
+                  });
+                }
+              });
+            }
+          });
+        }
+      });
+
+      // 4. Group by KitchenTypeCode → one KOT per kitchen
+      const kitchenGroups: Record<string, any[]> = {};
+      expandedItems.forEach((item: any) => {
+        const kCode = item.KitchenTypeCode || "0";
+        if (!kitchenGroups[kCode]) kitchenGroups[kCode] = [];
+        kitchenGroups[kCode].push(item);
+      });
+
+      // 5. Print one KOT per kitchen group
+      const tableNo =
+        orderContext.orderType === "DINE_IN"
+          ? orderContext.tableNo
+          : `TW-${orderContext.takeawayNo}`;
+
+      for (const [kCode, groupItems] of Object.entries(kitchenGroups)) {
+        const printerIp = groupItems[0].PrinterIP;
+        const kotData = {
+          orderId,
+          orderNo: orderId,
+          tableNo,
+          waiterName,
+          items: groupItems,
+          kitchenName:
+            groupItems[0].KitchenTypeName || (kCode === "0" ? "KITCHEN" : kCode),
+        };
+        await this.printKOT(
+          kotData,
+          "SYSTEM",
+          isAdditional ? "ADDITIONAL" : "NEW",
+          printerIp
+        );
+      }
+
+      // 6. KDS backup copy (respects enableKDSPrint setting)
+      if (enableKDSPrint !== false) {
+        try {
+          const kdsData = {
+            orderId,
+            orderNo: orderId,
+            tableNo,
+            waiterName,
+            items,
+            kitchenName: "KDS",
+          };
+          await this.printKDSOrder(kdsData, "SYSTEM");
+        } catch (kdsErr) {
+          console.error("[UniversalPrinter] KDS backup print failed:", kdsErr);
+        }
+      }
+
+      return true;
+    } catch (err) {
+      console.error("[UniversalPrinter] routeAndPrintOrderKOT error:", err);
+      return false;
+    }
+  }
+
+  static async printReceiptAuto(settlementData: any): Promise<boolean> {
+    try {
+      const header = settlementData?.header || {};
+      const orderId = header.OrderId || header.SettlementID || "";
+      if (orderId && this.isDuplicateReceiptPrint(orderId)) {
+        return false;
+      }
+
+      const items = settlementData?.items || [];
+      const payments = settlementData?.payments || [];
+
+      const isPercentage = header.DiscountType === "percentage";
+      const discountValue = isPercentage
+        ? Number(header.DiscountPercentage ?? 0)
+        : Number(header.DiscountAmount ?? 0);
+
+      const discountInfo: DiscountInfo = {
+        applied: Number(header.DiscountAmount ?? 0) > 0,
+        type: (header.DiscountType || "fixed") as "fixed" | "percentage",
+        value: discountValue,
+        amount: Number(header.DiscountAmount ?? 0),
+      };
+
+      const saleData = {
+        invoiceNumber: header.BillNo || header.SettlementID,
+        tableNo: header.TableNo || "TAKEAWAY",
+        total: Number(header.SysAmount ?? 0),
+        paymentMethod: header.PayMode || "CASH",
+        cashPaid: Number(header.SysAmount ?? 0),
+        change: 0,
+        items: items.map((i: any) => ({
+          name: i.DishName || i.Description,
+          price: Number(i.Price || i.PricePerUnit || 0),
+          qty: Number(i.Qty || i.Quantity || 1),
+          status: i.Status || "NORMAL",
+          discountAmount: Number(i.DiscountAmount || 0),
+          discountType: i.DiscountType || "fixed",
+          modifiers: i.modifiers || [],
+        })),
+        payments: payments.map((p: any) => ({
+          payMode: p.PayModeName || p.Remarks || "CASH",
+          payModeName: p.PayModeName || p.Remarks || "CASH",
+          amount: Number(p.Amount ?? 0),
+          referenceNo: p.ReferenceNo || ""
+        })),
+        roundOff: Number(header.RoundedBy ?? 0),
+        date: header.LastSettlementDate || new Date(),
+        discountAmount: Number(header.DiscountAmount ?? 0),
+        discountType: header.DiscountType || null,
+        discountValue: discountValue,
+        subTotal: Number(header.SubTotal ?? 0),
+        serviceCharge: Number(header.ServiceCharge ?? 0),
+        takeawayCharge: Number(header.TakeawayCharge ?? 0),
+      };
+
+      return await this.smartPrint(saleData, "1", {}, discountInfo);
+    } catch (err) {
+      console.error("[UniversalPrinter] printReceiptAuto failed:", err);
+      return false;
+    }
   }
 
   static async testAllPrinters(): Promise<void> {

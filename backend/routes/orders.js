@@ -242,6 +242,7 @@ async function syncToProfessionalTables(
   displayOrderId,
   items,
   userId,
+  startDate,
 ) {
   const isTakeaway =
     !tableId ||
@@ -324,6 +325,16 @@ async function syncToProfessionalTables(
       `);
   } else {
     orderGuid = require("crypto").randomUUID();
+    let initialTakeawayCharge = 0;
+    if (isTakeaway) {
+      try {
+        const settingsRes = await transaction.request().query("SELECT TOP 1 ISNULL(TakeawayCharges, 0) AS TakeawayCharges FROM CompanySettings WHERE Id = '1'");
+        initialTakeawayCharge = parseFloat(settingsRes.recordset[0]?.TakeawayCharges) || 0;
+      } catch (settingsErr) {
+        console.warn("⚠️ [orders.js] Failed to fetch TakeawayCharges from settings:", settingsErr.message);
+      }
+    }
+
     await transaction
       .request()
       .input("orderId", sql.UniqueIdentifier, orderGuid)
@@ -335,8 +346,10 @@ async function syncToProfessionalTables(
       .input("isTakeaway", sql.Bit, isTakeaway ? 1 : 0)
       .input("pax", sql.Int, tablePax)
       .input("customerName", sql.NVarChar, tableCustomerName)
+      .input("takeawayCharge", sql.Decimal(18, 2), initialTakeawayCharge)
+      .input("startDate", sql.Date, startDate)
       .query(
-        "INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode, IsTakeAway, Pax, CustomerName, Start_Date) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority, @isTakeaway, @pax, @customerName, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))",
+        "INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode, IsTakeAway, Pax, CustomerName, TakeawayCharge, start_date) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority, @isTakeaway, @pax, @customerName, @takeawayCharge, @startDate)",
       );
   }
 
@@ -361,6 +374,7 @@ async function syncToProfessionalTables(
   itemRequest.input("userId", sql.UniqueIdentifier, finalUserId);
   itemRequest.input("bizId", sql.UniqueIdentifier, bizId);
   itemRequest.input("orderNo", sql.NVarChar(100), cleanOrderNo);
+  itemRequest.input("startDate", sql.Date, startDate);
 
   let batchSql = "";
   const statusCodes = {
@@ -400,49 +414,38 @@ async function syncToProfessionalTables(
     const isCombo = item.isCombo === true || String(item.isCombo) === "1";
     let comboDetailsJSON = null;
     let resolvedUnitPrice = unitPrice;
-    if (
-      isCombo &&
-      Array.isArray(item.comboSelections) &&
-      item.comboSelections.length > 0
-    ) {
+    if (isCombo && Array.isArray(item.comboSelections) && item.comboSelections.length > 0) {
       // Prefer the basePrice sent by the frontend; fall back to item.price.
       // item.basePrice is the original combo dish cost BEFORE options are added.
       // Using it prevents surcharges from stacking on repeated DB syncs.
       const basePrice = parseFloat(item.basePrice || unitPrice);
 
       let totalSurcharge = 0;
-      item.comboSelections.forEach((group) => {
+      item.comboSelections.forEach(group => {
         if (Array.isArray(group.items)) {
-          group.items.forEach((opt) => {
-            totalSurcharge +=
-              parseFloat(opt.surcharge || 0) + parseFloat(opt.dishPrice || 0);
+          group.items.forEach(opt => {
+            totalSurcharge += parseFloat(opt.surcharge || 0) + parseFloat(opt.dishPrice || 0);
           });
         }
       });
       resolvedUnitPrice = basePrice + totalSurcharge;
 
       // Wrap selections with the basePrice so we can recover it from the DB
-      comboDetailsJSON = JSON.stringify({
-        basePrice,
-        groups: item.comboSelections,
-      });
+      comboDetailsJSON = JSON.stringify({ basePrice, groups: item.comboSelections });
     } else if (isCombo) {
       // Combo with no selections saved yet — check if ComboDetailsJSON is already stored
       try {
         const existing = item.ComboDetailsJSON || item.comboDetailsJSON;
         if (existing) {
-          const parsed =
-            typeof existing === "string" ? JSON.parse(existing) : existing;
+          const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
           const bp = parsed.basePrice;
           if (bp !== undefined) {
             const groups = parsed.groups || [];
             let totalSurcharge = 0;
-            groups.forEach((group) => {
+            groups.forEach(group => {
               if (Array.isArray(group.items)) {
-                group.items.forEach((opt) => {
-                  totalSurcharge +=
-                    parseFloat(opt.surcharge || 0) +
-                    parseFloat(opt.dishPrice || 0);
+                group.items.forEach(opt => {
+                  totalSurcharge += parseFloat(opt.surcharge || 0) + parseFloat(opt.dishPrice || 0);
                 });
               }
             });
@@ -450,9 +453,7 @@ async function syncToProfessionalTables(
             comboDetailsJSON = existing; // preserve as-is
           }
         }
-      } catch (_) {
-        /* leave as unitPrice */
-      }
+      } catch (_) { /* leave as unitPrice */ }
     }
 
     const p_id = `id${idx}`,
@@ -493,10 +494,26 @@ async function syncToProfessionalTables(
           : "fixed";
     itemRequest.input(p_disctype, sql.NVarChar(50), resolvedDiscountType);
 
+    const isTWItem =
+      item.isTakeaway === true ||
+      item.IsTakeaway === true ||
+      item.isTakeAway === true ||
+      item.IsTakeAway === true ||
+      String(item.isTakeaway) === "1" ||
+      String(item.IsTakeaway) === "1" ||
+      String(item.isTakeAway) === "1" ||
+      String(item.IsTakeAway) === "1" ||
+      String(item.isTakeaway).toLowerCase() === "true" ||
+      String(item.IsTakeaway).toLowerCase() === "true" ||
+      String(item.isTakeAway).toLowerCase() === "true" ||
+      String(item.IsTakeAway).toLowerCase() === "true";
+
     const isSC =
-      item.isServiceCharge === true ||
-      String(item.isServiceCharge) === "1" ||
-      String(item.isServiceCharge).toLowerCase() === "true";
+      !isTWItem && (
+        item.isServiceCharge === true ||
+        String(item.isServiceCharge) === "1" ||
+        String(item.isServiceCharge).toLowerCase() === "true"
+      );
     let itemSC = null;
     if (isSC) {
       const qtyVal = Number(item.qty || 1);
@@ -504,10 +521,11 @@ async function syncToProfessionalTables(
       const discVal = Number(item.discount || 0);
       let itemDiscount = 0;
       if (discVal > 0) {
+        const discountBasis = isCombo ? Number(item.basePrice || priceVal) : priceVal;
         if (resolvedDiscountType === "percentage") {
-          itemDiscount = priceVal * qtyVal * (discVal / 100);
+          itemDiscount = discountBasis * qtyVal * (discVal / 100);
         } else {
-          itemDiscount = discVal * qtyVal;
+          itemDiscount = Math.min(discVal, discountBasis) * qtyVal;
         }
       }
       const itemSubtotal = priceVal * qtyVal - itemDiscount;
@@ -546,8 +564,8 @@ async function syncToProfessionalTables(
       END
       ELSE
       BEGIN
-        INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName,SongName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, BaseAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, ComboDetailsJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime, DiscountAmount, DiscountType, ServiceCharge, Start_Date)
-        VALUES (@${p_id}, @orderId, @${p_dish}, @${p_name}, @${p_name}, @${p_song}, @${p_qty}, @${p_cost}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_status}, @userId, CASE WHEN @${p_status} = 2 THEN GETDATE() ELSE @${p_created} END, @${p_mods}, @${p_combo}, @orderNo, @${p_note}, @${p_tw}, @bizId, GETDATE(), @${p_disc}, @${p_disctype}, @${p_sc}, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC));
+        INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName,SongName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, BaseAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, ComboDetailsJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime, DiscountAmount, DiscountType, ServiceCharge, start_date)
+        VALUES (@${p_id}, @orderId, @${p_dish}, @${p_name}, @${p_name}, @${p_song}, @${p_qty}, @${p_cost}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_status}, @userId, CASE WHEN @${p_status} = 2 THEN GETDATE() ELSE @${p_created} END, @${p_mods}, @${p_combo}, @orderNo, @${p_note}, @${p_tw}, @bizId, GETDATE(), @${p_disc}, @${p_disctype}, @${p_sc}, @startDate);
       END
 
       -- Sync Modifiers for Item ${idx}
@@ -564,6 +582,7 @@ async function syncToProfessionalTables(
       });
 
     if (modItems.length > 0) {
+      batchSql += `INSERT INTO RestaurantmodifierdetailCur (OrderDetailId, OrderId, DishId, ModifierId, Quantity, Amount, ModifierName, CreatedBy, CreatedOn, start_date) VALUES `;
       modItems.forEach((mod, midx) => {
         const pm_id = `mId${idx}_${midx}`,
           pm_qty = `mQty${idx}_${midx}`,
@@ -581,10 +600,10 @@ async function syncToProfessionalTables(
         itemRequest.input(pm_amt, sql.Decimal(18, 2), mod.Price || 0);
         itemRequest.input(
           pm_name,
-          sql.NVarChar(255),
-          mod.ModifierName,
+          sql.NVarChar(800),
+          (mod.ModifierName || "").substring(0, 800),
         );
-        batchSql += `INSERT INTO RestaurantmodifierdetailCur (OrderDetailId, OrderId, DishId, ModifierId, Quantity, Amount, ModifierName, CreatedBy, CreatedOn, Start_Date) VALUES (@${p_id}, @orderId, @${p_dish}, @${pm_id}, @${pm_qty}, @${pm_amt}, @${pm_name}, @userId, GETDATE(), (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC));\n`;
+        batchSql += `(@${p_id}, @orderId, @${p_dish}, @${pm_id}, @${pm_qty}, @${pm_amt}, @${pm_name}, @userId, GETDATE(), @startDate)${midx === modItems.length - 1 ? ";" : ","}`;
       });
     }
   });
@@ -624,19 +643,11 @@ async function syncToProfessionalTables(
 
 async function syncTableStatus(req, tableId) {
   if (!tableId || tableId === "undefined" || tableId === "null") return null;
-  const cleanId = String(tableId)
-    .replace(/^\{|\}$/g, "")
-    .trim()
-    .toLowerCase();
-
-  const isValidUUID =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      cleanId,
-    );
+  const cleanId = String(tableId).replace(/^\{|\}$/g, "").trim().toLowerCase();
+  
+  const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanId);
   if (!isValidUUID) {
-    console.log(
-      `[syncTableStatus] Skipping sync for non-UUID tableId: ${cleanId}`,
-    );
+    console.log(`[syncTableStatus] Skipping sync for non-UUID tableId: ${cleanId}`);
     return null;
   }
 
@@ -654,22 +665,54 @@ async function syncTableStatus(req, tableId) {
     OR (Tableno = @TableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL))
     ORDER BY CASE WHEN OrderNumber = (SELECT CurrentOrderId FROM TableMaster WHERE TableId = @tid) THEN 0 ELSE 1 END, CreatedOn DESC;
 
-    -- Calculate Totals strictly including Service Charge and GST
+    DECLARE @TakeawayOverride INT = 0;
+    DECLARE @SCOverride INT = 0;
+
+    IF EXISTS (
+      SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_NAME = 'RestaurantOrderCur' AND COLUMN_NAME = 'TakeawayChargeOverride'
+    )
+    BEGIN
+      EXEC sp_executesql N'SELECT TOP 1 @out = ISNULL(TakeawayChargeOverride, 0) FROM RestaurantOrderCur WHERE OrderId = @OrderId', N'@OrderId UNIQUEIDENTIFIER, @out INT OUTPUT', @ActualOrderId, @TakeawayOverride OUTPUT;
+    END
+
+    IF EXISTS (
+      SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_NAME = 'RestaurantOrderCur' AND COLUMN_NAME = 'ServiceChargeOverride'
+    )
+    BEGIN
+      EXEC sp_executesql N'SELECT TOP 1 @out = ISNULL(ServiceChargeOverride, 0) FROM RestaurantOrderCur WHERE OrderId = @OrderId', N'@OrderId UNIQUEIDENTIFIER, @out INT OUTPUT', @ActualOrderId, @SCOverride OUTPUT;
+    END
+
+    -- Calculate Totals strictly including Service Charge, Takeaway Charges and GST
     DECLARE @subtotal DECIMAL(18,2) = 0;
     DECLARE @serviceCharge DECIMAL(18,2) = 0;
+    DECLARE @takeawayCharge DECIMAL(18,2) = 0;
+    DECLARE @takeawayRate DECIMAL(18,2) = 0;
     DECLARE @gstRate DECIMAL(18,2) = 0.09; -- default 9%
+
+    SELECT TOP 1 @takeawayRate = ISNULL(TakeawayCharges, 0) FROM CompanySettings;
 
     SELECT 
         @count = COUNT(*), 
         @subtotal = ISNULL(SUM(ActualAmount), 0),
-        @serviceCharge = ISNULL(SUM(ServiceCharge), 0)
+        @serviceCharge = CASE WHEN @SCOverride = 1 THEN 0 ELSE ISNULL(SUM(ServiceCharge), 0) END,
+        @takeawayCharge = CASE WHEN @TakeawayOverride = 1 THEN 0 ELSE ISNULL(SUM(Quantity * CASE WHEN isTakeAway = 1 THEN @takeawayRate ELSE 0 END), 0) END
     FROM RestaurantOrderDetailCur 
     WHERE OrderId = @ActualOrderId AND StatusCode <> 0;
 
     SELECT TOP 1 @gstRate = ISNULL(GSTPercentage, 0) / 100.0 FROM CompanySettings;
     IF @gstRate IS NULL SET @gstRate = 0.09;
 
-    SET @total = ROUND(@subtotal + @serviceCharge + ((@subtotal + @serviceCharge) * @gstRate), 2);
+    SET @total = ROUND(@subtotal + @serviceCharge + @takeawayCharge + ((@subtotal + @serviceCharge + @takeawayCharge) * @gstRate), 2);
+
+    -- Update RestaurantOrderCur with calculated TakeawayCharge
+    IF @ActualOrderId IS NOT NULL
+    BEGIN
+        UPDATE RestaurantOrderCur 
+        SET TakeawayCharge = @takeawayCharge
+        WHERE OrderId = @ActualOrderId;
+    END
 
     -- 🛡️ SHIELD 1: ATOMIC SYNC - If no items, force close the order to prevent ghosts
     IF @count = 0 AND @ActualOrderId IS NOT NULL
@@ -681,6 +724,7 @@ async function syncTableStatus(req, tableId) {
     -- Update TableMaster with DEFINITIVE state
     UPDATE TableMaster 
     SET Status = CASE 
+        WHEN @count = 0 THEN 0
         WHEN Status = 2 THEN 2 
         WHEN Status = 3 THEN 3
         WHEN @count > 0 THEN 1 
@@ -693,16 +737,16 @@ async function syncTableStatus(req, tableId) {
                          WHEN @ActualOrderNo IS NOT NULL AND @ActualOrderNo <> ISNULL(CurrentOrderId, '') THEN GETDATE()
                          -- INITIAL SET: If it was NULL/Invalid and we now have items
                          WHEN (@count > 0 OR Status IN (2, 3)) AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
-                         -- Strictly CLEAR StartTime if table is becoming Available
-                         WHEN @count = 0 AND Status NOT IN (2, 3) THEN NULL 
+                         -- Strictly CLEAR StartTime if table has 0 items
+                         WHEN @count = 0 THEN NULL 
                          ELSE StartTime 
                     END,
         CustomerName = CASE 
-                         WHEN @count = 0 AND Status NOT IN (2, 3) THEN NULL 
+                         WHEN @count = 0 THEN NULL 
                          ELSE CustomerName 
                     END,
         Pax = CASE 
-                         WHEN @count = 0 AND Status NOT IN (2, 3) THEN NULL 
+                         WHEN @count = 0 THEN NULL 
                          ELSE Pax 
                     END,
         CurrentOrderId = @ActualOrderNo,
@@ -778,6 +822,15 @@ router.post("/save-cart", async (req, res) => {
       entryStatus,
     } = req.body;
     const pool = await poolPromise;
+    
+    // Day Start / Day End validation check
+    const activeDayRes = await pool.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
+    if (activeDayRes.recordset.length === 0) {
+      return res.status(400).json({ error: "No active business date. Please Start Day first." });
+    }
+    const activeStartDate = activeDayRes.recordset[0].StartDate;
+    const formattedStartDate = activeStartDate instanceof Date ? activeStartDate.toISOString().split("T")[0] : activeStartDate;
+
     const cleanId = String(tableId)
       .replace(/^\{|\}$/g, "")
       .trim();
@@ -845,6 +898,7 @@ router.post("/save-cart", async (req, res) => {
         currentOrderId,
         items || [],
         userId,
+        formattedStartDate,
       );
 
       // 🚀 CRITICAL: Update TableMaster INSIDE the same transaction
@@ -946,6 +1000,7 @@ router.post("/send", async (req, res) => {
             d.ModifiersJSON, d.Remarks as note, d.isTakeAway as isTakeaway,
             ISNULL(d.DiscountAmount, 0) as discount,
             ISNULL(d.DiscountType, NULL) as discountType,
+            CAST(ISNULL(dish.IsDiscountAllowed, 1) AS INT) as IsDiscountAllowed,
             ISNULL(ckt.KitchenTypeCode, '2') as KitchenTypeCode, 
             ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'KITCHEN') as KitchenTypeName,
             pm.PrinterPath as PrinterIP
@@ -1116,6 +1171,7 @@ router.get("/cart/:tableId", async (req, res) => {
           d.ModifiersJSON, d.ComboDetailsJSON, d.Remarks as note, d.isTakeAway as isTakeaway,
           ISNULL(d.DiscountAmount, 0) as discount,
           ISNULL(d.DiscountType, NULL) as discountType,
+          CAST(ISNULL(dish.IsDiscountAllowed, 1) AS INT) as IsDiscountAllowed,
           d.CreatedOn as DateCreated,
           CASE d.StatusCode 
             WHEN 1 THEN 'NEW' WHEN 2 THEN 'SENT' WHEN 3 THEN 'READY' 
@@ -1191,7 +1247,7 @@ router.post("/cancel", async (req, res) => {
       .request()
       .input("oid", sql.NVarChar(100), orderId).query(`
         SELECT h.OrderId, h.OrderNumber, RTRIM(LTRIM(h.Tableno)) AS Tableno, h.BusinessUnitId, h.CreatedBy, h.MobileNo,
-               tm.DiningSection, tm.TableId
+               tm.DiningSection, tm.TableId, h.start_date
         FROM RestaurantOrderCur h
         LEFT JOIN TableMaster tm ON h.Tableno = tm.TableNumber
         WHERE h.OrderNumber = @oid AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
@@ -1203,6 +1259,11 @@ router.post("/cancel", async (req, res) => {
         .status(404)
         .json({ error: "Order not found or already closed" });
     }
+
+    // Fetch active business date from DateEntry
+    const activeDayRes = await pool.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
+    const activeStartDate = activeDayRes.recordset[0]?.StartDate;
+    const finalStartDate = activeStartDate || header.start_date || new Date();
 
     const itemsData = await pool
       .request()
@@ -1245,17 +1306,18 @@ router.post("/cancel", async (req, res) => {
         .input("subTotal", sql.Money, subTotal)
         .input("voidQty", sql.Int, voidQty)
         .input("voidAmt", sql.Money, subTotal)
-        .input("mobile", sql.NVarChar(50), header.MobileNo).query(`
+        .input("mobile", sql.NVarChar(50), header.MobileNo)
+        .input("startDate", sql.Date, finalStartDate).query(`
           INSERT INTO SettlementHeader (
             SettlementID, LastSettlementDate, BillNo, OrderType, TableNo, Section, 
             CashierID, BusinessUnitId, SysAmount, ManualAmount, CreatedBy, CreatedOn, 
             IsCancelled, CancellationReason, CancelledDate, CancelledByUserName, 
-            SubTotal, TotalTax, DiscountAmount, MobileNo, VoidItemQty, VoidItemAmount, Start_Date
+            SubTotal, TotalTax, DiscountAmount, MobileNo, VoidItemQty, VoidItemAmount, start_date
           ) VALUES (
             @sid, GETDATE(), @oid, 'DINE-IN', @tableNo, @section, 
             @userId, @bizId, 0, 0, @userId, GETDATE(), 
             1, @reason, GETDATE(), @userName, 
-            @subTotal, 0, 0, @mobile, @voidQty, @voidAmt, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
+            @subTotal, 0, 0, @mobile, @voidQty, @voidAmt, @startDate
           )
         `);
 
@@ -1271,13 +1333,14 @@ router.post("/cancel", async (req, res) => {
           .input("price", sql.Decimal(18, 2), item.PricePerUnit)
           .input("catId", sql.UniqueIdentifier, item.CategoryId)
           .input("catName", sql.NVarChar(255), item.CategoryName)
-          .input("groupName", sql.NVarChar(255), item.DishGroupName).query(`
+          .input("groupName", sql.NVarChar(255), item.DishGroupName)
+          .input("startDate", sql.Date, finalStartDate).query(`
             INSERT INTO SettlementItemDetail (
               SettlementID, DishId, DishName,SongName, Qty, Price, Status, OrderDateTime,
-              CategoryId, CategoryName, SubCategoryName, Start_Date
+              CategoryId, CategoryName, SubCategoryName, start_date
             ) VALUES (
               @sid, @dishId, @dishName,  @songName,@qty, @price, 'VOIDED', GETDATE(),
-              @catId, @catName, @groupName, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
+              @catId, @catName, @groupName, @startDate
             )
           `);
       }
@@ -1294,7 +1357,8 @@ router.post("/cancel", async (req, res) => {
         )
         .input("userId", sql.UniqueIdentifier, toGuidOrNull(userId))
         .input("subTotal", sql.Money, subTotal)
-        .input("voidQty", sql.Int, voidQty).query(`
+        .input("voidQty", sql.Int, voidQty)
+        .input("startDate", sql.Date, finalStartDate).query(`
           -- Insert into SettlementTotalSales (Zeroed)
           INSERT INTO SettlementTotalSales (SettlementID, PayMode, SysAmount, ManualAmount, AmountDiff, ReceiptCount)
           VALUES (@sid, 'VOID', 0, 0, 0, @voidQty);
@@ -1312,12 +1376,12 @@ router.post("/cancel", async (req, res) => {
             BusinessUnitId, RestaurantBillId, OrderId, BillNumber, OrderDateTime, TimeBilled, 
             TotalLineItemAmount, TotalTax, DiscountAmount, TotalAmount, StatusCode, 
             CreatedBy, CreatedOn, InvoiceDate, ServiceCharge, RoundedBy, TotalAmountLessFreight,
-            PaymentTermCode, Start_Date
+            PaymentTermCode, start_date
           ) VALUES (
             @bizId, @sid, @sid, @oid, GETDATE(), GETDATE(),
             @subTotal, 0, 0, 0, 4,
             @userId, GETDATE(), CAST(GETDATE() AS DATE), 0, 0, @subTotal,
-            0, (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
+            0, @startDate
           );
         `);
 
@@ -1359,9 +1423,7 @@ router.post("/complete", async (req, res) => {
     const { tableId, userId } = req.body;
     const cleanId = toGuidOrNull(tableId);
     if (!cleanId) {
-      console.log(
-        `[Complete] Skipping table release for non-table order: ${tableId}`,
-      );
+      console.log(`[Complete] Skipping table release for non-table order: ${tableId}`);
       return res.json({ success: true });
     }
     const pool = await poolPromise;
@@ -1400,9 +1462,7 @@ router.post("/hold", async (req, res) => {
     const { tableId } = req.body;
     const cleanId = toGuidOrNull(tableId);
     if (!cleanId) {
-      console.log(
-        `[Hold] Skipping table updates for non-table order: ${tableId}`,
-      );
+      console.log(`[Hold] Skipping table updates for non-table order: ${tableId}`);
       return res.json({ success: true });
     }
     const pool = await poolPromise;
@@ -1431,22 +1491,15 @@ router.post("/checkout", async (req, res) => {
     const { tableId } = req.body;
     const cleanId = toGuidOrNull(tableId);
     if (!cleanId) {
-      console.log(
-        `[Checkout] Skipping table updates for non-table order: ${tableId}`,
-      );
-      return res.json({
-        success: true,
-        tableNo: "TAKEAWAY",
-        section: "TAKEAWAY",
-      });
+      console.log(`[Checkout] Skipping table updates for non-table order: ${tableId}`);
+      return res.json({ success: true, tableNo: "TAKEAWAY", section: "TAKEAWAY" });
     }
     const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
     try {
       // Step 1: Move table to Payment Pending (Status 2) and mark items as SERVED (4)
-      await transaction.request().input("tid", sql.UniqueIdentifier, cleanId)
-        .query(`
+      await transaction.request().input("tid", sql.UniqueIdentifier, cleanId).query(`
           -- Reduce deadlock victim priority: prefer to lose vs more critical write transactions
           SET DEADLOCK_PRIORITY LOW;
 
@@ -1477,9 +1530,7 @@ router.post("/checkout", async (req, res) => {
 
       await transaction.commit();
     } catch (txErr) {
-      try {
-        await transaction.rollback();
-      } catch (_) {}
+      try { await transaction.rollback(); } catch (_) {}
       throw txErr;
     }
 
@@ -1512,15 +1563,11 @@ router.post("/checkout", async (req, res) => {
       }
       return;
     } catch (err) {
-      const isDeadlock =
-        err.number === 1205 ||
-        (err.message && err.message.includes("deadlock"));
+      const isDeadlock = err.number === 1205 || (err.message && err.message.includes("deadlock"));
       if (isDeadlock && attempt < MAX_DEADLOCK_RETRIES) {
         const delay = DEADLOCK_RETRY_DELAY_MS * attempt;
-        console.warn(
-          `⚠️ [Checkout] Deadlock detected (attempt ${attempt}/${MAX_DEADLOCK_RETRIES}). Retrying in ${delay}ms...`,
-        );
-        await new Promise((r) => setTimeout(r, delay));
+        console.warn(`⚠️ [Checkout] Deadlock detected (attempt ${attempt}/${MAX_DEADLOCK_RETRIES}). Retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
         continue;
       }
       console.error(`❌ Checkout Error (attempt ${attempt}):`, err.message);
@@ -1800,9 +1847,7 @@ router.get("/active-kitchen", async (req, res) => {
         ...row,
         status: statusMap[row.StatusCode],
         modifiers: row.ModifiersJSON ? JSON.parse(row.ModifiersJSON) : [],
-        comboSelections: row.ComboDetailsJSON
-          ? JSON.parse(row.ComboDetailsJSON)
-          : [],
+        comboSelections: row.ComboDetailsJSON ? JSON.parse(row.ComboDetailsJSON) : [],
       });
     });
     res.json({ serverTime: Date.now(), orders: Object.values(orders) });
@@ -1818,12 +1863,9 @@ router.post("/log-print", async (req, res) => {
 
     let safeOrderId = toGuidOrNull(orderId);
     if (!safeOrderId && orderNumber) {
-      const orderQuery = await pool
-        .request()
+      const orderQuery = await pool.request()
         .input("orderNumber", sql.VarChar(50), String(orderNumber).trim())
-        .query(
-          "SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNumber ORDER BY CreatedOn DESC",
-        );
+        .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNumber ORDER BY CreatedOn DESC");
       if (orderQuery.recordset.length > 0) {
         safeOrderId = orderQuery.recordset[0].OrderId;
       }
@@ -2171,47 +2213,12 @@ router.post("/payment-status", async (req, res) => {
       .input("status", sql.Int, paymentStatus).query(`
       UPDATE TableMaster SET PAYMENT_STATUS = @status WHERE TableId = @tid
     `);
-
-    // When online payment is confirmed, emit qr_payment_confirmed so APK
-    // prints the receipt at the same time as the KOT (not after items are served).
-    if (Number(paymentStatus) === 1) {
-      try {
-        const io = req.app.get("io");
-        if (io) {
-          const orderRes = await pool.request()
-            .input("tid", sql.VarChar(50), cleanId)
-            .query(`
-              SELECT TOP 1
-                tm.TableNumber,
-                roc.OrderNumber AS OrderId
-              FROM TableMaster tm
-              LEFT JOIN RestaurantOrderCur roc
-                ON roc.Tableno = tm.TableNumber
-                AND (roc.isOrderClosed = 0 OR roc.isOrderClosed IS NULL)
-              WHERE tm.TableId = @tid
-            `);
-          const row = orderRes.recordset[0];
-          if (row?.OrderId) {
-            io.emit("qr_payment_confirmed", {
-              tableId: cleanId.toLowerCase(),
-              tableNo: row.TableNumber || "",
-              orderId: row.OrderId,
-            });
-            console.log(`[payment-status] Emitted qr_payment_confirmed for Order: ${row.OrderId}`);
-          }
-        }
-      } catch (emitErr) {
-        console.warn("[payment-status] Failed to emit qr_payment_confirmed:", emitErr.message);
-      }
-    }
-
     res.json({ success: true });
   } catch (err) {
     console.error("❌ payment-status Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // ─── Reduce Service Charge ────────────────────────────────────────────────────
 // Self-healing: adds ServiceChargeOverride column if it doesn't exist
@@ -2234,12 +2241,32 @@ router.post("/reduce-service-charge", async (req, res) => {
     await pool
       .request()
       .input("orderNo", sql.NVarChar(50), String(orderId).trim())
-      .input("override", sql.Bit, overrideValue).query(`
+      .input("override", sql.Bit, overrideValue)
+      .query(`
         UPDATE RestaurantOrderCur
         SET ServiceChargeOverride = @override, ModifiedOn = GETDATE()
         WHERE OrderNumber = @orderNo
           AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
       `);
+
+    // Sync status to update related tables and broadcast total change
+    const orderRes = await pool.request()
+      .input("orderNo", sql.VarChar(50), String(orderId).trim())
+      .query(`
+        SELECT TOP 1 tm.TableId 
+        FROM RestaurantOrderCur h
+        LEFT JOIN TableMaster tm ON RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(tm.TableNumber))
+        WHERE h.OrderNumber = @orderNo
+      `);
+    const tableId = orderRes.recordset[0]?.TableId;
+    if (tableId) {
+      const cleanTid = String(tableId).replace(/^\{|\}$/g, "").trim();
+      await syncTableStatus(req, cleanTid);
+      req.app.get("io")?.emit("cart_updated", {
+        tableId: cleanTid.toLowerCase(),
+        orderId: orderId,
+      });
+    }
 
     res.json({ success: true, serviceChargeReduced: overrideValue === 1 });
   } catch (err) {
@@ -2266,19 +2293,134 @@ router.get("/:orderId/sc-override", async (req, res) => {
 
     const result = await pool
       .request()
-      .input("orderNo", sql.NVarChar(50), String(orderId).trim()).query(`
+      .input("orderNo", sql.NVarChar(50), String(orderId).trim())
+      .query(`
         SELECT TOP 1 ISNULL(ServiceChargeOverride, 0) AS ServiceChargeOverride
         FROM RestaurantOrderCur
         WHERE OrderNumber = @orderNo
           AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
       `);
 
-    const reduced =
-      result.recordset[0]?.ServiceChargeOverride === true ||
-      result.recordset[0]?.ServiceChargeOverride === 1;
+    const reduced = result.recordset[0]?.ServiceChargeOverride === true || result.recordset[0]?.ServiceChargeOverride === 1;
     res.json({ serviceChargeReduced: reduced });
   } catch (err) {
     console.error("❌ sc-override GET Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Self-healing: adds TakeawayCharge and TakeawayChargeOverride columns if they don't exist to RestaurantOrderCur and RestaurantOrder
+router.post("/apply-takeaway-charge", async (req, res) => {
+  try {
+    const { orderId, apply } = req.body; // apply = true to add takeaway charge, false to remove
+    if (!orderId) return res.status(400).json({ error: "Missing orderId" });
+    const pool = await poolPromise;
+
+    // 🔧 Self-healing: ensure columns exist
+    await pool.request().query(`
+      IF NOT EXISTS (
+        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'RestaurantOrderCur' AND COLUMN_NAME = 'TakeawayCharge'
+      )
+      ALTER TABLE RestaurantOrderCur ADD TakeawayCharge DECIMAL(18, 2) DEFAULT 0;
+      
+      IF NOT EXISTS (
+        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'RestaurantOrder' AND COLUMN_NAME = 'TakeawayCharge'
+      )
+      ALTER TABLE RestaurantOrder ADD TakeawayCharge DECIMAL(18, 2) DEFAULT 0;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'RestaurantOrderCur' AND COLUMN_NAME = 'TakeawayChargeOverride'
+      )
+      ALTER TABLE RestaurantOrderCur ADD TakeawayChargeOverride BIT NULL;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'RestaurantOrder' AND COLUMN_NAME = 'TakeawayChargeOverride'
+      )
+      ALTER TABLE RestaurantOrder ADD TakeawayChargeOverride BIT NULL;
+    `);
+
+    let chargeValue = 0;
+    if (apply) {
+      // Get TakeawayCharges from CompanySettings
+      const settingsRes = await pool.request().query("SELECT TOP 1 ISNULL(TakeawayCharges, 0) AS TakeawayCharges FROM CompanySettings WHERE Id = '1'");
+      chargeValue = parseFloat(settingsRes.recordset[0]?.TakeawayCharges) || 0;
+    }
+
+    const overrideValue = apply ? 0 : 1;
+
+    await pool
+      .request()
+      .input("orderNo", sql.NVarChar(50), String(orderId).trim())
+      .input("charge", sql.Decimal(18, 2), chargeValue)
+      .input("override", sql.Bit, overrideValue)
+      .query(`
+        UPDATE RestaurantOrderCur
+        SET TakeawayCharge = @charge, TakeawayChargeOverride = @override, ModifiedOn = GETDATE()
+        WHERE OrderNumber = @orderNo
+          AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+      `);
+
+    // Sync status to update related tables and broadcast total change
+    const orderRes = await pool.request()
+      .input("orderNo", sql.VarChar(50), String(orderId).trim())
+      .query(`
+        SELECT TOP 1 tm.TableId 
+        FROM RestaurantOrderCur h
+        LEFT JOIN TableMaster tm ON RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(tm.TableNumber))
+        WHERE h.OrderNumber = @orderNo
+      `);
+    const tableId = orderRes.recordset[0]?.TableId;
+    if (tableId) {
+      const cleanTid = String(tableId).replace(/^\{|\}$/g, "").trim();
+      await syncTableStatus(req, cleanTid);
+      req.app.get("io")?.emit("cart_updated", {
+        tableId: cleanTid.toLowerCase(),
+        orderId: orderId,
+      });
+    }
+
+    res.json({ success: true, takeawayCharge: chargeValue, takeawayChargeOverride: overrideValue });
+  } catch (err) {
+    console.error("❌ apply-takeaway-charge Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET the current takeaway charge status for an order
+router.get("/:orderId/takeaway-charge", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    if (!orderId) return res.status(400).json({ error: "Missing orderId" });
+    const pool = await poolPromise;
+
+    // Check column exists first
+    const colCheck = await pool.request().query(`
+      SELECT 1 AS HasCol FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_NAME = 'RestaurantOrderCur' AND COLUMN_NAME = 'TakeawayChargeOverride'
+    `);
+    if (!colCheck.recordset.length) {
+      return res.json({ takeawayCharge: 0, takeawayChargeOverride: 0 });
+    }
+
+    const result = await pool
+      .request()
+      .input("orderNo", sql.NVarChar(50), String(orderId).trim())
+      .query(`
+        SELECT TOP 1 ISNULL(TakeawayCharge, 0) AS TakeawayCharge, ISNULL(TakeawayChargeOverride, 0) AS TakeawayChargeOverride
+        FROM RestaurantOrderCur
+        WHERE OrderNumber = @orderNo
+          AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+      `);
+
+    const takeawayCharge = parseFloat(result.recordset[0]?.TakeawayCharge) || 0;
+    const takeawayChargeOverride = result.recordset[0]?.TakeawayChargeOverride === true || result.recordset[0]?.TakeawayChargeOverride === 1 ? 1 : 0;
+    res.json({ takeawayCharge, takeawayChargeOverride });
+  } catch (err) {
+    console.error("❌ takeaway-charge GET Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

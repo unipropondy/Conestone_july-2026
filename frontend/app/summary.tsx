@@ -1,6 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { useRouter, useLocalSearchParams } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -29,17 +29,17 @@ import { Theme } from "../constants/theme";
 
 import { useAuthStore } from "@/stores/authStore";
 import CancelOrderModal from "../components/CancelOrderModal";
-import VoidItemModal from "../components/VoidItemModal";
 import DiscountModal from "../components/DiscountModal";
+import ItemDiscountModal from "../components/ItemDiscountModal";
 import ServerSelectionModal from "../components/ServerSelectionModal";
 import UniversalPrinter from "../components/UniversalPrinter";
+import VoidItemModal from "../components/VoidItemModal";
 import {
   findActiveOrder,
   useActiveOrdersStore,
   voidOrderItem,
 } from "../stores/activeOrdersStore";
 import { useCartStore } from "../stores/cartStore";
-import { CustomerDisplaySync } from "../utils/CustomerDisplaySync";
 import { useCompanySettingsStore } from "../stores/companySettingsStore";
 import { useGeneralSettingsStore } from "../stores/generalSettingsStore";
 import {
@@ -47,8 +47,9 @@ import {
   setOrderContext,
   useOrderContextStore,
 } from "../stores/orderContextStore";
-import { useTableStatusStore } from "../stores/tableStatusStore";
 import { useServiceChargeOverrideStore } from "../stores/serviceChargeOverrideStore";
+import { useTableStatusStore } from "../stores/tableStatusStore";
+import { CustomerDisplaySync } from "../utils/CustomerDisplaySync";
 
 const EMPTY_ARRAY: any[] = [];
 
@@ -94,7 +95,9 @@ export default function SummaryScreen() {
   const activeOrder = context ? findActiveOrder(context) : undefined;
 
   const [showDiscount, setShowDiscount] = useState(false);
+  const [showDiscountTypeModal, setShowDiscountTypeModal] = useState(false);
   const [showGstModal, setShowGstModal] = useState(false);
+  const [showItemDiscount, setShowItemDiscount] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancelReasons, setCancelReasons] = useState<
     Array<{ CRCode: string; CRName: string }>
@@ -123,6 +126,9 @@ export default function SummaryScreen() {
   const [isMerging, setIsMerging] = useState(false);
   const [scReduced, setScReduced] = useState(false);
   const [isReducingSC, setIsReducingSC] = useState(false);
+  const [takeawayChargeApplied, setTakeawayChargeApplied] = useState(true);
+  const [takeawayChargeAmt, setTakeawayChargeAmt] = useState(0);
+  const [isApplyingTakeaway, setIsApplyingTakeaway] = useState(false);
   const [splitQuantities, setSplitQuantities] = useState<
     Record<string, number>
   >({});
@@ -133,6 +139,11 @@ export default function SummaryScreen() {
   const [isSplitMode, setIsSplitMode] = useState(false);
   const [splitType, setSplitType] = useState<"items" | "parts">("items");
   const [partCount, setPartCount] = useState<number>(2);
+  const [showPromoModal, setShowPromoModal] = useState(false);
+  const [promoCodeInput, setPromoCodeInput] = useState("");
+  const [isApplyingPromo, setIsApplyingPromo] = useState(false);
+  const [availablePromos, setAvailablePromos] = useState<any[]>([]);
+  const [loadingPromos, setLoadingPromos] = useState(false);
 
   const [loyaltyPhone, setLoyaltyPhone] = useState("");
   const [loyaltyName, setLoyaltyName] = useState("");
@@ -146,6 +157,13 @@ export default function SummaryScreen() {
   const [loyaltySearchText, setLoyaltySearchText] = useState("");
   const [activeLoyaltyTab, setActiveLoyaltyTab] = useState<"search" | "register">("search");
   const [isRegisteringLoyalty, setIsRegisteringLoyalty] = useState(false);
+
+  // 🏆 REWARD POINTS STATES
+  const [rewardMember, setRewardMember] = useState<any | null>(null);
+  const [showRewardModal, setShowRewardModal] = useState(false);
+  const [rewardSearchText, setRewardSearchText] = useState("");
+  const [rewardSearchResults, setRewardSearchResults] = useState<any[]>([]);
+  const [isSearchingRewards, setIsSearchingRewards] = useState(false);
 
   const tableState = context?.tableId
     ? useTableStatusStore.getState().tableMap[context.tableId.toLowerCase()]
@@ -225,6 +243,33 @@ export default function SummaryScreen() {
       console.error("Loyalty search error:", err);
     }
   };
+
+  // 🏆 REWARD POINTS MEMBER LOOKUP
+  const handleRewardSearch = async (text: string) => {
+    setRewardSearchText(text);
+    const clean = text.trim();
+    setIsSearchingRewards(true);
+    try {
+      const token = useAuthStore.getState().token;
+      const res = await fetch(`${API_URL}/api/rewards/members/search?q=${encodeURIComponent(clean)}`, {
+        headers: token ? { "Authorization": `Bearer ${token}` } : {}
+      });
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setRewardSearchResults(data);
+      }
+    } catch (err) {
+      console.error("Reward member search error:", err);
+    } finally {
+      setIsSearchingRewards(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showRewardModal) {
+      handleRewardSearch("");
+    }
+  }, [showRewardModal]);
 
   const handleSearchTextChange = async (text: string) => {
     setLoyaltySearchText(text);
@@ -367,10 +412,13 @@ export default function SummaryScreen() {
 
   const enableKOT = useGeneralSettingsStore((s: any) => s.settings.enableKOT);
   const enableCheckoutBill = useGeneralSettingsStore((s: any) => s.settings.enableCheckoutBill);
+  const showLoyalty = useGeneralSettingsStore((s: any) => s.settings.showLoyalty !== false);
+  const showRewardPoints = useGeneralSettingsStore((s: any) => s.settings.showRewardPoints !== false);
+  const showPromoCode = useGeneralSettingsStore((s: any) => s.settings.showPromoCode !== false);
 
   const currentContextId = useCartStore((s: any) => s.currentContextId);
   const cart = useCartStore((s: any) => (currentContextId ? s.carts[currentContextId] : undefined) || EMPTY_ARRAY);
-  
+
   const currentTableOrderId = useCartStore((s: any) => context?.tableId ? s.tableOrderIds[context.tableId] : undefined);
   const displayOrderId = currentTableOrderId || activeOrder?.orderId;
 
@@ -402,7 +450,7 @@ export default function SummaryScreen() {
     }
   }, [activeOrder]);
 
-  // Load saved SC override for this order whenever focused
+  // Load saved SC override and takeaway charge for this order whenever focused
   useEffect(() => {
     if (displayOrderId && isFocused) {
       const token = useAuthStore.getState().token;
@@ -419,7 +467,21 @@ export default function SummaryScreen() {
             useServiceChargeOverrideStore.getState().setOverride(displayOrderId, false);
           }
         })
-        .catch(() => {});
+        .catch(() => { });
+
+      fetch(`${API_URL}/api/orders/${displayOrderId}/takeaway-charge`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d?.takeawayChargeOverride === 1) {
+            setTakeawayChargeApplied(false);
+          } else {
+            setTakeawayChargeApplied(true);
+          }
+          setTakeawayChargeAmt(d?.takeawayCharge || 0);
+        })
+        .catch(() => { });
     }
   }, [displayOrderId, isFocused]);
 
@@ -444,9 +506,9 @@ export default function SummaryScreen() {
       .catch((err) => console.error("Error fetching all dishes:", err));
   }, [activeOrder]);
 
-   const user = useAuthStore((s: any) => s.user);
-   const permissions = useAuthStore((s: any) => s.permissions);
-   const isWaiter = useAuthStore((s: any) => s.isWaiter);
+  const user = useAuthStore((s: any) => s.user);
+  const permissions = useAuthStore((s: any) => s.permissions);
+  const isWaiter = useAuthStore((s: any) => s.isWaiter);
 
   const fetchServers = async () => {
     try {
@@ -475,7 +537,7 @@ export default function SummaryScreen() {
   );
   const closeActiveOrder = useActiveOrdersStore((s: any) => s.closeActiveOrder);
   const activeOrders = useActiveOrdersStore((s: any) => s.activeOrders);
-  
+
   const selectedTablesText = useMemo(() => {
     return selectedMergeOrderIds
       .map((id) => {
@@ -581,6 +643,93 @@ export default function SummaryScreen() {
     }
   };
 
+  const handlePromoCode = async (code: string) => {
+    if (!code || code.trim() === "") {
+      showToast({ type: "warning", message: "Enter Promo Code" });
+      return;
+    }
+    try {
+      setIsApplyingPromo(true);
+      const token = useAuthStore.getState().token;
+      const res = await fetch(`${API_URL}/api/members/promocode/${encodeURIComponent(code.trim())}`, {
+        headers: {
+          ...(token ? { "Authorization": `Bearer ${token}` } : {})
+        }
+      });
+      if (!res.ok) {
+        let errMsg = "Invalid Promo Code";
+        try {
+          const errorData = await res.json();
+          errMsg = errorData.error || errMsg;
+        } catch (_) { }
+        showToast({ type: "error", message: errMsg });
+        return;
+      }
+      const data = await res.json();
+      const promoAmount = parseFloat(data.Promoamount) || 0;
+      if (promoAmount <= 0) {
+        showToast({ type: "warning", message: "No value", subtitle: "Promo code has 0 amount" });
+        return;
+      }
+
+      const discountData = {
+        applied: true,
+        type: "fixed" as const,
+        value: promoAmount,
+        label: `Promo: ${code.trim()}`,
+      };
+      applyDiscount(discountData);
+
+      const currentContext = getOrderContext();
+      if (currentContext) {
+        updateOrderDiscount(currentContext, discountData);
+      }
+      showToast({ type: "success", message: "Promo Code Applied", subtitle: `Discount of ${currencySymbol}${promoAmount.toFixed(2)} applied` });
+      setShowPromoModal(false);
+      setPromoCodeInput("");
+    } catch (err: any) {
+      console.error("Error applying promo code:", err);
+      showToast({ type: "error", message: "Failed to apply promo code" });
+    } finally {
+      setIsApplyingPromo(false);
+    }
+  };
+
+  const fetchAvailablePromos = async () => {
+    try {
+      setLoadingPromos(true);
+      const token = useAuthStore.getState().token;
+      const res = await fetch(`${API_URL}/api/members/promocodes/all`, {
+        headers: {
+          ...(token ? { "Authorization": `Bearer ${token}` } : {})
+        }
+      });
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setAvailablePromos(data);
+      }
+    } catch (err) {
+      console.error("Error fetching available promos:", err);
+    } finally {
+      setLoadingPromos(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showPromoModal) {
+      fetchAvailablePromos();
+    }
+  }, [showPromoModal]);
+
+  const filteredPromos = useMemo(() => {
+    const query = promoCodeInput.trim().toLowerCase();
+    if (!query) return availablePromos;
+    return availablePromos.filter(p =>
+      (p.Promocode || "").toLowerCase().includes(query) ||
+      (p.Name || "").toLowerCase().includes(query)
+    );
+  }, [availablePromos, promoCodeInput]);
+
   const { width: SCREEN_W, height: SCREEN_H } = useWindowDimensions();
   const isLandscape = SCREEN_W > SCREEN_H;
   const isTablet = Math.min(SCREEN_W, SCREEN_H) >= 500;
@@ -677,7 +826,7 @@ export default function SummaryScreen() {
           }
           clearCart(); // This clears unsent items for the current context
           useOrderContextStore.getState().clearOrderContext(); // Clear context
-          
+
           if (
             context.orderType === "DINE_IN" &&
             context.section &&
@@ -696,8 +845,8 @@ export default function SummaryScreen() {
       }, 500);
     } catch (error: any) {
       console.error("Cancel error:", error);
-      showToast({ 
-        type: "error", 
+      showToast({
+        type: "error",
         message: "Error cancelling order",
         subtitle: error.message
       });
@@ -740,7 +889,7 @@ export default function SummaryScreen() {
     try {
       const kitchenGroups: Record<string, any[]> = {};
       const expandedItems: any[] = [];
-      
+
       cart
         .filter((i: any) => i.status !== "VOIDED")
         .forEach((item: any) => {
@@ -779,7 +928,7 @@ export default function SummaryScreen() {
         const kName =
           items[0].KitchenTypeName || (kCode === "0" ? "KITCHEN" : kCode);
         const printerIp = items[0].PrinterIP;
-        
+
         const kotData = {
           orderId: displayOrderId,
           orderNo: displayOrderId,
@@ -791,7 +940,6 @@ export default function SummaryScreen() {
           waiterName: context?.serverName || "Staff",
           items: items,
           kitchenName: kName,
-          kitchenCode: kCode,
         };
         if (enableKOT) {
           await UniversalPrinter.printKOT(
@@ -825,7 +973,7 @@ export default function SummaryScreen() {
 
   const handlePrintCheckoutBill = async () => {
     if (!cart.length) return;
-    
+
     try {
       const saleData = {
         items: cart,
@@ -838,6 +986,9 @@ export default function SummaryScreen() {
         date: new Date(),
         isCheckout: true,
         serviceCharge: serviceChargeAmount,
+        takeawayCharge: currentTakeawayCharge,
+        mobileNo: rewardMember?.Phone || "",
+        memberRewardBalance: String(rewardMember?.RewardCredit || 0),
       };
 
       if (enableCheckoutBill) {
@@ -852,7 +1003,7 @@ export default function SummaryScreen() {
         const token = useAuthStore.getState().token;
         await fetch(`${API_URL}/api/orders/checkout`, {
           method: "POST",
-          headers: { 
+          headers: {
             "Content-Type": "application/json",
             ...(token ? { "Authorization": `Bearer ${token}` } : {})
           },
@@ -898,8 +1049,8 @@ export default function SummaryScreen() {
         showToast({
           type: "success",
           message: shouldReduce ? "Service Charge Removed" : "Service Charge Restored",
-          subtitle: shouldReduce 
-            ? "Bill updated — service charge set to 0.00" 
+          subtitle: shouldReduce
+            ? "Bill updated — service charge set to 0.00"
             : "Bill updated — service charge restored to normal",
         });
       } else {
@@ -910,6 +1061,46 @@ export default function SummaryScreen() {
       showToast({ type: "error", message: "Network error" });
     } finally {
       setIsReducingSC(false);
+    }
+  };
+  // ── Apply/Remove Takeaway Charge Handler ──────────────────────────────────
+  const handleToggleTakeawayCharge = async () => {
+    if (!displayOrderId) {
+      showToast({ type: "error", message: "Order ID not found" });
+      return;
+    }
+    const shouldApply = !takeawayChargeApplied;
+    try {
+      setIsApplyingTakeaway(true);
+      const token = useAuthStore.getState().token;
+      const res = await fetch(`${API_URL}/api/orders/apply-takeaway-charge`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ orderId: displayOrderId, apply: shouldApply }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTakeawayChargeApplied(shouldApply);
+        setTakeawayChargeAmt(data.takeawayCharge);
+        setShowBillOptions(false);
+        showToast({
+          type: "success",
+          message: shouldApply ? "Takeaway Charge Added" : "Takeaway Charge Removed",
+          subtitle: shouldApply
+            ? `Bill updated — added takeaway charge of ${currencySymbol}${data.takeawayCharge.toFixed(2)}`
+            : "Bill updated — takeaway charge removed",
+        });
+      } else {
+        showToast({ type: "error", message: data.error || "Failed to update takeaway charge" });
+      }
+    } catch (err) {
+      console.error("Takeaway toggle error:", err);
+      showToast({ type: "error", message: "Network error" });
+    } finally {
+      setIsApplyingTakeaway(false);
     }
   };
 
@@ -974,33 +1165,9 @@ export default function SummaryScreen() {
     return loyaltyDiscountItems.length > 0 ? loyaltyDiscountItems : cart;
   }, [loyaltyDiscountItems, cart]);
 
-  // 🖥️ CUSTOMER DISPLAY REAL-TIME SYNC
-  useEffect(() => {
-    if (context && finalItems && finalItems.length > 0) {
-      console.log("🖥️ [Summary] Syncing finalItems to Customer Display:", finalItems.length);
-      CustomerDisplaySync.syncCart({
-        orderContext: context,
-        cart: finalItems,
-        discountInfo: discountInfo,
-        gstPercentage: settings.gstPercentage || 0,
-        roundOff: 0,
-        active: true,
-      });
-    } else {
-      console.log("🖥️ [Summary] finalItems empty or null, syncing idle");
-      CustomerDisplaySync.syncIdle();
-    }
-  }, [context, finalItems, discountInfo, settings]);
 
-  // 🖥️ CUSTOMER DISPLAY LIFE CYCLE MANAGER
-  useEffect(() => {
-    CustomerDisplaySync.isPaymentActive = true;
-    return () => {
-      CustomerDisplaySync.isPaymentActive = false;
-      console.log("🖥️ [Summary] Unmounting screen, resetting Customer Display to idle");
-      CustomerDisplaySync.syncIdle();
-    };
-  }, []);
+
+
 
   const totalItems = useMemo(
     () =>
@@ -1012,46 +1179,57 @@ export default function SummaryScreen() {
     [finalItems],
   );
 
-  const { grossTotal, totalItemDiscount, scEligibleSubtotal } = useMemo(() => {
+  const takeawayCharges = settings.takeawayCharges || 0;
+
+  const { grossTotal, totalItemDiscount, scEligibleSubtotal, calcTakeawayChargeAmt, takeawayQty } = useMemo(() => {
     return finalItems.reduce((acc: any, item: any) => {
       const isVoided = (item as any).status === "VOIDED";
       if (isVoided) return acc;
-      
+
+      const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+      const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
       const baseTotal = (item.price || 0) * item.qty;
       let itemDiscount = 0;
       const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
       const discType = item.discountType || 'percentage';
-      
+
       if (discAmt > 0) {
         if (discType === 'percentage') {
-          itemDiscount = baseTotal * (discAmt / 100);
+          itemDiscount = (discountBasis * (discAmt / 100)) * item.qty;
         } else {
-          itemDiscount = discAmt * item.qty;
+          itemDiscount = Math.min(discAmt, discountBasis) * item.qty;
         }
       }
 
       const itemSubtotal = baseTotal - itemDiscount;
-      const isSC = Number(item.isServiceCharge) === 1 || item.isServiceCharge === true;
+      const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+      const itemTWCharge = isTakeawayItem ? item.qty * takeawayCharges : 0;
 
       return {
         grossTotal: acc.grossTotal + baseTotal,
         totalItemDiscount: acc.totalItemDiscount + itemDiscount,
         scEligibleSubtotal: acc.scEligibleSubtotal + (isSC ? itemSubtotal : 0),
+        calcTakeawayChargeAmt: acc.calcTakeawayChargeAmt + itemTWCharge,
+        takeawayQty: acc.takeawayQty + (isTakeawayItem ? item.qty : 0),
       };
-    }, { grossTotal: 0, totalItemDiscount: 0, scEligibleSubtotal: 0 });
-  }, [finalItems]);
+    }, { grossTotal: 0, totalItemDiscount: 0, scEligibleSubtotal: 0, calcTakeawayChargeAmt: 0, takeawayQty: 0 });
+  }, [finalItems, takeawayCharges]);
 
   const subtotal = useMemo(() => grossTotal - totalItemDiscount, [grossTotal, totalItemDiscount]);
   const allItemsHaveSC = useMemo(() => {
     const activeItems = finalItems.filter((i: any) => i.status !== "VOIDED" && i.statusCode !== 0);
-    return activeItems.length > 0 && activeItems.every((item: any) => Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+    return activeItems.length > 0 && activeItems.every((item: any) => {
+      const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      return !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
+    });
   }, [finalItems]);
 
   const discountAmount = useMemo(() => {
     if (!discountInfo?.applied) return 0;
     if (discountInfo.type === "percentage")
-      return (subtotal * discountInfo.value) / 100;
-    return discountInfo.value;
+      return Math.min((subtotal * discountInfo.value) / 100, subtotal);
+    return Math.min(discountInfo.value, subtotal);
   }, [discountInfo, subtotal]);
 
   const netAfterDiscount = useMemo(() => subtotal - discountAmount, [subtotal, discountAmount]);
@@ -1063,12 +1241,54 @@ export default function SummaryScreen() {
     return Math.max(0, scEligibleSubtotal - proportion * discountAmount);
   }, [scEligibleSubtotal, subtotal, discountAmount]);
 
+  const billDiscountProportion = useMemo(() => {
+    if (!discountInfo?.applied) return 0;
+    if (discountInfo.type === "percentage") {
+      return discountInfo.value / 100;
+    }
+    return subtotal > 0 ? (discountAmount / subtotal) : 0;
+  }, [discountInfo, subtotal, discountAmount]);
+
+  const currentTakeawayCharge = useMemo(() => {
+    if (!takeawayChargeApplied) return 0;
+    return calcTakeawayChargeAmt * (1 - billDiscountProportion);
+  }, [takeawayChargeApplied, calcTakeawayChargeAmt, billDiscountProportion]);
+
   const serviceChargeAmount = useMemo(
     () => (scReduced ? 0 : scEligibleNet * scRate),
     [scEligibleNet, scRate, scReduced],
   );
-  const taxableAmount = useMemo(() => netAfterDiscount + serviceChargeAmount, [netAfterDiscount, serviceChargeAmount]);
+  const taxableAmount = useMemo(() => netAfterDiscount + serviceChargeAmount + currentTakeawayCharge, [netAfterDiscount, serviceChargeAmount, currentTakeawayCharge]);
   const gstAmountRaw = useMemo(() => taxableAmount * gstRate, [taxableAmount, gstRate]);
+
+  // 🖥️ CUSTOMER DISPLAY REAL-TIME SYNC
+  useEffect(() => {
+    if (context && finalItems && finalItems.length > 0) {
+      console.log("🖥️ [Summary] Syncing finalItems to Customer Display:", finalItems.length);
+      CustomerDisplaySync.syncCart({
+        orderContext: context,
+        cart: finalItems,
+        discountInfo: discountInfo,
+        gstPercentage: settings.gstPercentage || 0,
+        roundOff: 0,
+        active: true,
+        takeawayCharge: currentTakeawayCharge,
+      });
+    } else {
+      console.log("🖥️ [Summary] finalItems empty or null, syncing idle");
+      CustomerDisplaySync.syncIdle();
+    }
+  }, [context, finalItems, discountInfo, settings, currentTakeawayCharge]);
+
+  // 🖥️ CUSTOMER DISPLAY LIFE CYCLE MANAGER
+  useEffect(() => {
+    CustomerDisplaySync.isPaymentActive = true;
+    return () => {
+      CustomerDisplaySync.isPaymentActive = false;
+      console.log("🖥️ [Summary] Unmounting screen, resetting Customer Display to idle");
+      CustomerDisplaySync.syncIdle();
+    };
+  }, []);
   // ✅ FIX: Round GST for display so breakdown matches the rounded grand total
   const gstAmount = useMemo(() => Math.round(gstAmountRaw * 100) / 100, [gstAmountRaw]);
   const grandTotal = useMemo(() => Math.round((taxableAmount + gstAmountRaw) * 100) / 100, [taxableAmount, gstAmountRaw]);
@@ -1094,6 +1314,174 @@ export default function SummaryScreen() {
     );
   }
 
+  const headerActions = (
+    <>
+      {showLoyalty && (
+        <TouchableOpacity
+          style={[
+            styles.actionBtn,
+            {
+              backgroundColor: Theme.successBg || "#dcfce7",
+              borderColor: Theme.successBorder || "#bbf7d0",
+              borderWidth: 1,
+            },
+            !isTablet &&
+            isLandscape && { height: 32, paddingHorizontal: 8 },
+          ]}
+          onPress={() => setShowLoyaltyModal(true)}
+        >
+          <Ionicons
+            name="ribbon-outline"
+            size={!isTablet && isLandscape ? 16 : 18}
+            color={Theme.success || "#16a34a"}
+          />
+          {isLandscape && (
+            <Text
+              style={[
+                styles.actionBtnText,
+                { color: Theme.success || "#16a34a" },
+                !isTablet && isLandscape && { fontSize: 10 },
+              ]}
+            >
+              Loyalty
+            </Text>
+          )}
+        </TouchableOpacity>
+      )}
+
+      <TouchableOpacity
+        style={[
+          styles.actionBtn,
+          {
+            backgroundColor: Theme.primaryLight,
+            borderColor: Theme.primaryBorder,
+            borderWidth: 1,
+          },
+          !isTablet &&
+          isLandscape && { height: 32, paddingHorizontal: 8 },
+        ]}
+        onPress={() => setShowDiscountTypeModal(true)}
+      >
+        <Ionicons
+          name="pricetag-outline"
+          size={!isTablet && isLandscape ? 16 : 18}
+          color={Theme.primary}
+        />
+        {isLandscape && (
+          <Text
+            style={[
+              styles.actionBtnText,
+              { color: Theme.primary },
+              !isTablet && isLandscape && { fontSize: 10 },
+            ]}
+          >
+            Discount
+          </Text>
+        )}
+      </TouchableOpacity>
+
+      {showRewardPoints && (
+        <TouchableOpacity
+          style={[
+            styles.actionBtn,
+            {
+              backgroundColor: "#FFFBEB",
+              borderColor: "#FEF3C7",
+              borderWidth: 1,
+            },
+            !isTablet &&
+            isLandscape && { height: 32, paddingHorizontal: 8 },
+          ]}
+          onPress={() => setShowRewardModal(true)}
+        >
+          <Ionicons
+            name="star-outline"
+            size={!isTablet && isLandscape ? 16 : 18}
+            color="#D97706"
+          />
+          {isLandscape && (
+            <Text
+              style={[
+                styles.actionBtnText,
+                { color: "#D97706" },
+                !isTablet && isLandscape && { fontSize: 10 },
+              ]}
+            >
+              Reward Points
+            </Text>
+          )}
+        </TouchableOpacity>
+      )}
+
+      {showPromoCode && (
+        <TouchableOpacity
+          style={[
+            styles.actionBtn,
+            {
+              backgroundColor: "#F5F3FF",
+              borderColor: "#DDD6FE",
+              borderWidth: 1,
+            },
+            !isTablet &&
+            isLandscape && { height: 32, paddingHorizontal: 8 },
+          ]}
+          onPress={() => setShowPromoModal(true)}
+        >
+          <Ionicons
+            name="barcode-outline"
+            size={!isTablet && isLandscape ? 16 : 18}
+            color="#7C3AED"
+          />
+          {isLandscape && (
+            <Text
+              style={[
+                styles.actionBtnText,
+                { color: "#7C3AED" },
+                !isTablet && isLandscape && { fontSize: 10 },
+              ]}
+            >
+              Promo Code
+            </Text>
+          )}
+        </TouchableOpacity>
+      )}
+
+      <TouchableOpacity
+        style={[
+          styles.actionBtn,
+          {
+            backgroundColor: Theme.dangerBg,
+            borderColor: Theme.dangerBorder,
+            borderWidth: 1,
+          },
+          !isTablet &&
+          isLandscape && { height: 32, paddingHorizontal: 8 },
+        ]}
+        onPress={() => {
+          fetchCancelReasons();
+          setShowCancelModal(true);
+        }}
+      >
+        <Ionicons
+          name="close-circle-outline"
+          size={!isTablet && isLandscape ? 16 : 18}
+          color={Theme.danger}
+        />
+        {isLandscape && (
+          <Text
+            style={[
+              styles.actionBtnText,
+              { color: Theme.danger },
+              !isTablet && isLandscape && { fontSize: 10 },
+            ]}
+          >
+            Cancel
+          </Text>
+        )}
+      </TouchableOpacity>
+    </>
+  );
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={Theme.bgNav} />
@@ -1103,26 +1491,45 @@ export default function SummaryScreen() {
           style={[
             styles.headerBar,
             isPhone && isLandscape && { height: 50, marginBottom: 5 },
+            isPhone && !isLandscape && {
+              flexDirection: "column",
+              alignItems: "stretch",
+              minHeight: undefined,
+              gap: 8,
+              paddingBottom: 10,
+            },
           ]}
         >
-          <View style={styles.headerLeft}>
-            <Pressable
-              style={styles.iconBtn}
-              onPress={() =>
-                router.canGoBack()
-                  ? router.back()
-                  : router.replace("/(tabs)/category")
-              }
-            >
-              <Ionicons name="arrow-back" size={24} color={Theme.textPrimary} />
-            </Pressable>
+          {isPhone && !isLandscape ? (
+            // MOBILE PORTRAIT LAYOUT
+            <>
+              {/* Row 1: Back Button + Title + Actions */}
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
+                  <Pressable
+                    style={styles.iconBtn}
+                    onPress={() =>
+                      router.canGoBack()
+                        ? router.back()
+                        : router.replace("/(tabs)/category")
+                    }
+                  >
+                    <Ionicons name="arrow-back" size={24} color={Theme.textPrimary} />
+                  </Pressable>
+                  <Text style={styles.title}>Summary</Text>
+                </View>
 
-            <View style={styles.headerTitleContainer}>
-              <Text style={styles.title}>Summary</Text>
+                {/* Actions Row */}
+                <View style={[styles.headerRight, { gap: 6 }]}>
+                  {headerActions}
+                </View>
+              </View>
+
+              {/* Row 2: Badges + Order ID */}
               <View
                 style={[
                   styles.orderBadgeRow,
-                  { flexWrap: "wrap", marginTop: 0 },
+                  { marginTop: 4, paddingLeft: 59, flexWrap: "wrap" },
                 ]}
               >
                 <View
@@ -1158,146 +1565,84 @@ export default function SummaryScreen() {
                     </Text>
                   </View>
                 )}
-                <Text
-                  style={[
-                    styles.orderSub,
-                    { marginLeft: isPhone && !isLandscape ? 0 : 8 },
-                  ]}
-                >
+                <Text style={[styles.orderSub, { marginLeft: 8 }]}>
                   #{displayOrderId || "NEW"}
                 </Text>
               </View>
-            </View>
-          </View>
-
-          <View style={styles.headerRight}>
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                {
-                  backgroundColor: Theme.successBg || "#dcfce7",
-                  borderColor: Theme.successBorder || "#bbf7d0",
-                  borderWidth: 1,
-                },
-                !isTablet &&
-                  isLandscape && { height: 32, paddingHorizontal: 8 },
-              ]}
-              onPress={() => setShowLoyaltyModal(true)}
-            >
-              <Ionicons
-                name="ribbon-outline"
-                size={!isTablet && isLandscape ? 16 : 18}
-                color={Theme.success || "#16a34a"}
-              />
-              {isLandscape && (
-                <Text
-                  style={[
-                    styles.actionBtnText,
-                    { color: Theme.success || "#16a34a" },
-                    !isTablet && isLandscape && { fontSize: 10 },
-                  ]}
+            </>
+          ) : (
+            // TABLET / LANDSCAPE LAYOUT
+            <>
+              <View style={styles.headerLeft}>
+                <Pressable
+                  style={styles.iconBtn}
+                  onPress={() =>
+                    router.canGoBack()
+                      ? router.back()
+                      : router.replace("/(tabs)/category")
+                  }
                 >
-                  Loyalty
-                </Text>
-              )}
-            </TouchableOpacity>
+                  <Ionicons name="arrow-back" size={24} color={Theme.textPrimary} />
+                </Pressable>
 
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                {
-                  backgroundColor: Theme.primaryLight,
-                  borderColor: Theme.primaryBorder,
-                  borderWidth: 1,
-                },
-                !isTablet &&
-                  isLandscape && { height: 32, paddingHorizontal: 8 },
-              ]}
-              onPress={() => setShowDiscount(true)}
-            >
-              <Ionicons
-                name="pricetag-outline"
-                size={!isTablet && isLandscape ? 16 : 18}
-                color={Theme.primary}
-              />
-              {isLandscape && (
-                <Text
-                  style={[
-                    styles.actionBtnText,
-                    { color: Theme.primary },
-                    !isTablet && isLandscape && { fontSize: 10 },
-                  ]}
-                >
-                  Discount
-                </Text>
-              )}
-            </TouchableOpacity>
+                <View style={styles.headerTitleContainer}>
+                  <Text style={styles.title}>Summary</Text>
+                  <View
+                    style={[
+                      styles.orderBadgeRow,
+                      { flexWrap: "wrap", marginTop: 0 },
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.typeBadge,
+                        {
+                          backgroundColor:
+                            context.orderType === "DINE_IN"
+                              ? Theme.primaryLight
+                              : Theme.warningBg,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.typeBadgeText,
+                          {
+                            color:
+                              context.orderType === "DINE_IN"
+                                ? Theme.primary
+                                : Theme.warning,
+                          },
+                        ]}
+                      >
+                        {context.orderType === "DINE_IN" ? "DINE-IN" : "TAKEAWAY"}
+                      </Text>
+                    </View>
+                    {context.orderType === "DINE_IN" && (
+                      <View style={styles.tableBadge}>
+                        <Text style={styles.tableBadgeText}>
+                          {formatSection(context.section || "")} • T
+                          {context.tableNo}
+                        </Text>
+                      </View>
+                    )}
+                    <Text
+                      style={[
+                        styles.orderSub,
+                        { marginLeft: 8 },
+                      ]}
+                    >
+                      #{displayOrderId || "NEW"}
+                    </Text>
+                  </View>
+                </View>
+              </View>
 
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                {
-                  backgroundColor: Theme.warningBg,
-                  borderColor: Theme.warningBorder,
-                  borderWidth: 1,
-                },
-                !isTablet &&
-                  isLandscape && { height: 32, paddingHorizontal: 8 },
-              ]}
-              onPress={handleFOC}
-            >
-              <Ionicons
-                name="gift-outline"
-                size={!isTablet && isLandscape ? 16 : 18}
-                color={Theme.warning}
-              />
-              {isLandscape && (
-                <Text
-                  style={[
-                    styles.actionBtnText,
-                    { color: Theme.warning },
-                    !isTablet && isLandscape && { fontSize: 10 },
-                  ]}
-                >
-                  FOC
-                </Text>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                {
-                  backgroundColor: Theme.dangerBg,
-                  borderColor: Theme.dangerBorder,
-                  borderWidth: 1,
-                },
-                !isTablet &&
-                  isLandscape && { height: 32, paddingHorizontal: 8 },
-              ]}
-              onPress={() => {
-                fetchCancelReasons();
-                setShowCancelModal(true);
-              }}
-            >
-              <Ionicons
-                name="close-circle-outline"
-                size={!isTablet && isLandscape ? 16 : 18}
-                color={Theme.danger}
-              />
-              {isLandscape && (
-                <Text
-                  style={[
-                    styles.actionBtnText,
-                    { color: Theme.danger },
-                    !isTablet && isLandscape && { fontSize: 10 },
-                  ]}
-                >
-                  Cancel
-                </Text>
-              )}
-            </TouchableOpacity>
-          </View>
+              <View style={styles.headerRight}>
+                {headerActions}
+              </View>
+            </>
+          )}
         </View>
 
         {/* MAIN CONTENT AREA */}
@@ -1324,7 +1669,8 @@ export default function SummaryScreen() {
               windowSize={5}
               removeClippedSubviews={true}
               renderItem={({ item }: { item: any }) => {
-                const isSC = (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true) && useGeneralSettingsStore.getState().settings.SVCIdentification !== false;
+                const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+                const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true) && useGeneralSettingsStore.getState().settings.SVCIdentification !== false;
                 return (
                   <View style={[
                     styles.row,
@@ -1335,120 +1681,143 @@ export default function SummaryScreen() {
                       backgroundColor: Theme.dangerBg,
                     }
                   ]}>
-                  <View style={styles.qtyBadge}>
-                    <Text style={styles.qtyBadgeText}>{item.qty}</Text>
-                  </View>
+                    <View style={styles.qtyBadge}>
+                      <Text style={styles.qtyBadgeText}>{item.qty}</Text>
+                    </View>
 
-                  <View style={styles.rowContent}>
-                    <Text
-                      style={[
-                        styles.name,
-                        (item as any).status === "VOIDED" && styles.textVoided,
-                      ]}
-                      numberOfLines={2}
-                    >
-                      {item.name}
-                      {item.isDishReward && " (Loyalty Reward 🎁)"}
-                      {(item as any).status === "VOIDED" && " (VOIDED)"}
-                    </Text>
-                    {(item.spicy && item.spicy !== "Medium") ||
-                    (item.oil && item.oil !== "Normal") ||
-                    (item.salt && item.salt !== "Normal") ||
-                    (item.sugar && item.sugar !== "Normal") ||
-                    item.note ? (
-                      <Text style={styles.sub} numberOfLines={1}>
-                        {[
-                          item.spicy && item.spicy !== "Medium"
-                            ? `🌶 ${item.spicy}`
-                            : "",
-                          item.oil && item.oil !== "Normal"
-                            ? `Oil: ${item.oil}`
-                            : "",
-                          item.salt && item.salt !== "Normal"
-                            ? `Salt: ${item.salt}`
-                            : "",
-                          item.sugar && item.sugar !== "Normal"
-                            ? `Sugar: ${item.sugar}`
-                            : "",
-                          item.note ? `📝 ${item.note}` : "",
-                        ]
-                          .filter(Boolean)
-                          .join("  ·  ")}
+                    <View style={styles.rowContent}>
+                      <Text
+                        style={[
+                          styles.name,
+                          (item as any).status === "VOIDED" && styles.textVoided,
+                        ]}
+                        numberOfLines={2}
+                      >
+                        {item.name}
+                        {item.isDishReward && " (Loyalty Reward 🎁)"}
+                        {(item as any).status === "VOIDED" && " (VOIDED)"}
                       </Text>
-                    ) : null}
-                    {item.modifiers &&
-                      Array.isArray(item.modifiers) &&
-                      item.modifiers.length > 0 && (
+                      {(item.spicy && item.spicy !== "Medium") ||
+                        (item.oil && item.oil !== "Normal") ||
+                        (item.salt && item.salt !== "Normal") ||
+                        (item.sugar && item.sugar !== "Normal") ||
+                        item.note ? (
                         <Text style={styles.sub} numberOfLines={1}>
-                          {item.modifiers
-                            .map((m: any) => `+ ${m.ModifierName}`)
+                          {[
+                            item.spicy && item.spicy !== "Medium"
+                              ? `🌶 ${item.spicy}`
+                              : "",
+                            item.oil && item.oil !== "Normal"
+                              ? `Oil: ${item.oil}`
+                              : "",
+                            item.salt && item.salt !== "Normal"
+                              ? `Salt: ${item.salt}`
+                              : "",
+                            item.sugar && item.sugar !== "Normal"
+                              ? `Sugar: ${item.sugar}`
+                              : "",
+                            item.note ? `📝 ${item.note}` : "",
+                          ]
+                            .filter(Boolean)
                             .join("  ·  ")}
                         </Text>
-                      )}
-                     {item.isCombo && item.comboSelections && Array.isArray(item.comboSelections) &&
-                      item.comboSelections
-                        .filter((group: any) => group.items && group.items.length > 0)
-                        .map((group: any, gIdx: number) => (
-                          <View key={`g-${gIdx}`} style={{ marginTop: 2, paddingLeft: 2 }}>
-                            <Text style={[styles.sub, { fontFamily: Fonts.bold, color: Theme.primary }]}>
-                              {group.groupName}:
-                            </Text>
-                            {(group.items || []).map((opt: any, oIdx: number) => {
-                              const effectiveAdd = (parseFloat(opt.surcharge || 0) + parseFloat(opt.dishPrice || 0));
-                              return (
-                                <Text key={`o-${oIdx}`} style={[styles.sub, { paddingLeft: 6 }]}>
-                                  ↳ {opt.name}{effectiveAdd > 0 ? ` (+$${effectiveAdd.toFixed(2)})` : ""}
-                                </Text>
-                              );
-                            })}
-                          </View>
-                        ))}
-                    {isSC && settings.serviceChargePercentage > 0 && item.status !== "VOIDED" && (
-                      <Text style={[styles.sub, { color: Theme.primary, fontFamily: Fonts.bold, marginTop: 4 }]}>
-                        Item Service Charge ({settings.serviceChargePercentage}%): {currencySymbol}{((((item.price || 0) * item.qty) - ((item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount)) ? (Number(item.discountAmount ?? item.discount ?? 0) * item.qty) : (((item.price || 0) * item.qty) * (Number(item.discountAmount ?? item.discount ?? 0) / 100)))) * (settings.serviceChargePercentage / 100)).toFixed(2)}
-                      </Text>
-                    )}
-                  </View>
-
-                  <View style={[styles.priceBlock, { alignItems: 'flex-end', justifyContent: 'center' }]}>
-                    {(Number(item.discountAmount ?? item.discount ?? 0)) > 0 && (
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                        <Text style={[styles.price, { fontSize: 13, textDecorationLine: "line-through", color: Theme.textMuted }]}>
-                          {currencySymbol}{((item.price || 0) * item.qty).toFixed(2)}
-                        </Text>
-                        <View style={{ backgroundColor: (Theme as any).successBg || '#dcfce7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
-                          <Text style={{ color: Theme.success || '#16a34a', fontSize: 11, fontFamily: Fonts.bold }}>
-                            {item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount) 
-                              ? `-${currencySymbol}${Number(item.discountAmount ?? item.discount).toFixed(2)}`
-                              : `-${Number(item.discountAmount ?? item.discount)}%`}
+                      ) : null}
+                      {item.modifiers &&
+                        Array.isArray(item.modifiers) &&
+                        item.modifiers.length > 0 && (
+                          <Text style={styles.sub} numberOfLines={1}>
+                            {item.modifiers
+                              .map((m: any) => `+ ${m.ModifierName}`)
+                              .join("  ·  ")}
                           </Text>
-                        </View>
-                      </View>
-                    )}
-                    <Text
-                      style={[
-                        styles.price,
-                        (item as any).status === "VOIDED" && styles.textVoided,
-                      ]}
-                    >
-                      {currencySymbol}
-                      {((item.price || 0) * item.qty - (
-                        (item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount)) 
-                        ? (Number(item.discountAmount ?? item.discount ?? 0) * item.qty) 
-                        : ((item.price || 0) * item.qty * (Number(item.discountAmount ?? item.discount ?? 0) / 100))
-                      )).toFixed(2)}
-                    </Text>
-                  </View>
+                        )}
+                      {item.isCombo && item.comboSelections && Array.isArray(item.comboSelections) &&
+                        item.comboSelections
+                          .filter((group: any) => group.items && group.items.length > 0)
+                          .map((group: any, gIdx: number) => (
+                            <View key={`g-${gIdx}`} style={{ marginTop: 2, paddingLeft: 2 }}>
+                              <Text style={[styles.sub, { fontFamily: Fonts.bold, color: Theme.primary }]}>
+                                {group.groupName}:
+                              </Text>
+                              {(group.items || []).map((opt: any, oIdx: number) => {
+                                const effectiveAdd = (parseFloat(opt.surcharge || 0) + parseFloat(opt.dishPrice || 0));
+                                return (
+                                  <Text key={`o-${oIdx}`} style={[styles.sub, { paddingLeft: 6 }]}>
+                                    ↳ {opt.name}{effectiveAdd > 0 ? ` (+$${effectiveAdd.toFixed(2)})` : ""}
+                                  </Text>
+                                );
+                              })}
+                            </View>
+                          ))}
+                      {isSC && settings.serviceChargePercentage > 0 && item.status !== "VOIDED" && (
+                        <Text style={[styles.sub, { color: Theme.primary, fontFamily: Fonts.bold, marginTop: 4 }]}>
+                          Item Service Charge ({settings.serviceChargePercentage}%): {currencySymbol}{(() => {
+                            const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+                            const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
+                            const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
+                            const isFixed = item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount);
+                            const itemDiscount = discAmt > 0
+                              ? (isFixed ? (Math.min(discAmt, discountBasis) * item.qty) : ((discountBasis * (discAmt / 100)) * item.qty))
+                              : 0;
+                            return ((item.price || 0) * item.qty - itemDiscount) * (settings.serviceChargePercentage / 100);
+                          })().toFixed(2)}
+                        </Text>
+                      )}
+                    </View>
 
-                  {item.status !== "VOIDED" && (
-                    <TouchableOpacity
-                      style={styles.itemTrashBtn}
-                      onPress={() => handleVoidItem(item)}
-                    >
-                      <Ionicons name="trash-outline" size={18} color={Theme.danger} />
-                    </TouchableOpacity>
-                  )}
-                </View>
+                    <View style={[styles.priceBlock, { alignItems: 'flex-end', justifyContent: 'center' }]}>
+                      {(Number(item.discountAmount ?? item.discount ?? 0)) > 0 && (
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                          <Text style={[styles.price, { fontSize: 13, textDecorationLine: "line-through", color: Theme.textMuted }]}>
+                            {currencySymbol}{((item.price || 0) * item.qty).toFixed(2)}
+                          </Text>
+                          <View style={{ backgroundColor: (Theme as any).successBg || '#dcfce7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                            <Text style={{ color: Theme.success || '#16a34a', fontSize: 11, fontFamily: Fonts.bold }}>
+                              {(() => {
+                                const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+                                const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
+                                const rawDiscAmt = Number(item.discountAmount ?? item.discount ?? 0);
+                                const isFixed = item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount);
+                                if (isFixed) {
+                                  const effectiveDisc = Math.min(rawDiscAmt, discountBasis);
+                                  return `-${currencySymbol}${effectiveDisc.toFixed(2)}`;
+                                } else {
+                                  return `-${rawDiscAmt}%`;
+                                }
+                              })()}
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+                      <Text
+                        style={[
+                          styles.price,
+                          (item as any).status === "VOIDED" && styles.textVoided,
+                        ]}
+                      >
+                        {currencySymbol}
+                        {(() => {
+                          const isCombo = item.isCombo === true || String(item.isCombo) === "1" || item.isCombo === 1;
+                          const discountBasis = isCombo ? (item.basePrice ?? item.price ?? 0) : (item.price ?? 0);
+                          const discAmt = Number(item.discountAmount ?? item.discount ?? 0);
+                          const isFixed = item.discountType === 'fixed' || (item.discountType == null && item.discountAmount > 0 && !item.discount);
+                          const itemDiscount = discAmt > 0
+                            ? (isFixed ? (Math.min(discAmt, discountBasis) * item.qty) : ((discountBasis * (discAmt / 100)) * item.qty))
+                            : 0;
+                          return ((item.price || 0) * item.qty - itemDiscount);
+                        })().toFixed(2)}
+                      </Text>
+                    </View>
+
+                    {item.status !== "VOIDED" && (
+                      <TouchableOpacity
+                        style={styles.itemTrashBtn}
+                        onPress={() => handleVoidItem(item)}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={Theme.danger} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 );
               }}
             />
@@ -1558,6 +1927,112 @@ export default function SummaryScreen() {
                     )}
                   </View>
                 )}
+
+                {/* 🏆 REWARD POINTS MEMBER DISPLAY */}
+                {rewardMember && (() => {
+                  const symbol = settings?.currencySymbol || "$";
+                  const rewardCreditVal = parseFloat(rewardMember.RewardCredit) || 0;
+                  return (
+                    <View
+                      style={{
+                        backgroundColor: "#FFF7ED",
+                        borderColor: "#F97316",
+                        borderWidth: 1,
+                        borderRadius: 10,
+                        padding: 12,
+                        marginBottom: 12,
+                        gap: 4
+                      }}
+                    >
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Ionicons name="gift" size={16} color="#F97316" />
+                        <Text style={{ fontSize: 13, fontFamily: Fonts.black, color: Theme.textPrimary, flex: 1 }}>
+                          Reward Member: {rewardMember.Name}
+                        </Text>
+                      </View>
+
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginLeft: 22, marginVertical: 4 }}>
+                        <TouchableOpacity
+                          onPress={() => setShowRewardModal(true)}
+                          style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: "#FFEDD5" }}
+                        >
+                          <Text style={{ fontSize: 11, fontFamily: Fonts.bold, color: "#F97316" }}>Change</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => {
+                            // If the current discount was applied as a reward discount, clear it too
+                            if (discountInfo?.applied && discountInfo?.label?.startsWith("Reward:")) {
+                              const cleared = { applied: false, type: "fixed" as const, value: 0, label: "" };
+                              applyDiscount(cleared);
+                              const ctx = getOrderContext();
+                              if (ctx) updateOrderDiscount(ctx, cleared);
+                            }
+                            setRewardMember(null);
+                          }}
+                          style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: "#FEE2E2" }}
+                        >
+                          <Text style={{ fontSize: 11, fontFamily: Fonts.bold, color: "#DC2626" }}>Remove</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      <Text style={{ fontSize: 12, fontFamily: Fonts.bold, color: Theme.textSecondary, marginLeft: 22 }}>
+                        Phone: {rewardMember.Phone}
+                      </Text>
+
+                      <Text style={{ fontSize: 12, fontFamily: Fonts.bold, color: "#D97706", marginLeft: 22 }}>
+                        Reward Balance: {currencySymbol}{rewardCreditVal.toFixed(2)}
+                      </Text>
+
+                      {rewardCreditVal > 0 && (
+                        <TouchableOpacity
+                          style={{
+                            marginTop: 8,
+                            marginLeft: 22,
+                            backgroundColor: "#FFFBEB",
+                            borderColor: "#FDE68A",
+                            borderWidth: 1,
+                            borderRadius: 8,
+                            paddingVertical: 6,
+                            paddingHorizontal: 12,
+                            alignSelf: "flex-start",
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: 6
+                          }}
+                          onPress={() => {
+                            const discountData = {
+                              applied: true,
+                              type: "fixed" as const,
+                              value: rewardCreditVal,
+                              label: `Reward: ${rewardMember.Name}`,
+                            };
+                            applyDiscount(discountData);
+                            const currentContext = getOrderContext();
+                            if (currentContext) {
+                              updateOrderDiscount(currentContext, discountData);
+                            }
+
+                            // Update local rewardMember state to reflect zero credit immediately in UI
+                            setRewardMember((prev: any) =>
+                              prev ? { ...prev, RewardCredit: 0 } : prev
+                            );
+
+                            showToast({
+                              type: "success",
+                              message: "Reward Applied",
+                              subtitle: `Redeemed ${currencySymbol}${rewardCreditVal.toFixed(2)} reward credit as discount`
+                            });
+                          }}
+                        >
+                          <Ionicons name="pricetag" size={14} color="#D97706" />
+                          <Text style={{ fontFamily: Fonts.bold, fontSize: 12, color: "#D97706" }}>
+                            Redeem Reward Discount
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  );
+                })()}
 
                 <View
                   style={[
@@ -1683,6 +2158,34 @@ export default function SummaryScreen() {
                   </View>
                 )}
 
+                {currentTakeawayCharge > 0 && (
+                  <View
+                    style={[
+                      styles.summaryRow,
+                      ((isLandscape && !isTablet) ||
+                        (isPhone && !isLandscape)) && { marginBottom: 6 },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.summaryLabel,
+                        isPhone && !isLandscape && { fontSize: 13 },
+                      ]}
+                    >
+                      Takeaway Charges ({currencySymbol}{takeawayCharges.toFixed(2)} * {takeawayQty})
+                    </Text>
+                    <Text
+                      style={[
+                        styles.summaryValue,
+                        isPhone && !isLandscape && { fontSize: 13 },
+                      ]}
+                    >
+                      {currencySymbol}
+                      {currentTakeawayCharge.toFixed(2)}
+                    </Text>
+                  </View>
+                )}
+
                 {gstRate > 0 && gstAmount > 0 && (
                   <View
                     style={[
@@ -1749,12 +2252,12 @@ export default function SummaryScreen() {
                         style={[
                           styles.serverSelector,
                           !context.serverId &&
-                            settings.waiterRequired && {
-                              borderColor: Theme.danger,
-                              borderStyle: "dashed",
-                            },
+                          settings.waiterRequired && {
+                            borderColor: Theme.danger,
+                            borderStyle: "dashed",
+                          },
                           isPhone &&
-                            !isLandscape && { minHeight: 44, padding: 6 },
+                          !isLandscape && { minHeight: 44, padding: 6 },
                         ]}
                         onPress={() => setShowServerModal(true)}
                         activeOpacity={0.7}
@@ -1788,9 +2291,9 @@ export default function SummaryScreen() {
                             style={[
                               styles.serverNameText,
                               !context.serverId &&
-                                settings.waiterRequired && {
-                                  color: Theme.danger,
-                                },
+                              settings.waiterRequired && {
+                                color: Theme.danger,
+                              },
                               isPhone && !isLandscape && { fontSize: 13 },
                             ]}
                             numberOfLines={1}
@@ -1846,10 +2349,10 @@ export default function SummaryScreen() {
                       style={[
                         styles.billBtn,
                         isPhone &&
-                          !isLandscape && {
-                            minHeight: 44,
-                            paddingHorizontal: 10,
-                          },
+                        !isLandscape && {
+                          minHeight: 44,
+                          paddingHorizontal: 10,
+                        },
                       ]}
                       onPress={() => setShowBillOptions(true)}
                       activeOpacity={0.7}
@@ -1925,13 +2428,13 @@ export default function SummaryScreen() {
                   style={[
                     styles.proceedBtn,
                     isLandscape &&
-                      !isTablet && { height: 48, borderRadius: 12 },
+                    !isTablet && { height: 48, borderRadius: 12 },
                     isPhone && !isLandscape && { height: 44, borderRadius: 12 },
                     !context.serverId &&
-                      settings.waiterRequired && {
-                        opacity: 0.5,
-                        backgroundColor: Theme.textMuted,
-                      },
+                    settings.waiterRequired && {
+                      opacity: 0.5,
+                      backgroundColor: Theme.textMuted,
+                    },
                   ]}
                   onPress={() => {
                     if (!context.serverId && settings.waiterRequired) {
@@ -1965,6 +2468,7 @@ export default function SummaryScreen() {
                       params: {
                         mobileNo: loyaltyPhone ? `${selectedCountry.code} ${loyaltyPhone.trim()}` : "",
                         customerName: loyaltyName || "",
+                        rewardMemberId: rewardMember?.MemberId || "",
                       },
                     });
                   }}
@@ -1988,10 +2492,193 @@ export default function SummaryScreen() {
         </View>
       </View>
 
+      {/* DISCOUNT TYPE SELECTION MODAL */}
+      <Modal
+        visible={showDiscountTypeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowDiscountTypeModal(false)}
+      >
+        <TouchableOpacity
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(15, 23, 42, 0.4)",
+            justifyContent: "center",
+            alignItems: "center",
+            padding: 16,
+          }}
+          activeOpacity={1}
+          onPress={() => setShowDiscountTypeModal(false)}
+        >
+          <View
+            style={[
+              {
+                backgroundColor: Theme.bgCard,
+                padding: 24,
+                borderRadius: 20,
+                width: "90%",
+                maxWidth: 400,
+                alignItems: "stretch",
+                borderWidth: 1,
+                borderColor: Theme.border,
+                ...Theme.shadowLg,
+              },
+            ]}
+          >
+            {/* Header */}
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 20,
+              }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <View
+                  style={{
+                    backgroundColor: Theme.primaryLight,
+                    padding: 8,
+                    borderRadius: 10,
+                  }}
+                >
+                  <Ionicons name="pricetags" size={18} color={Theme.primary} />
+                </View>
+                <Text
+                  style={{
+                    fontFamily: Fonts.bold,
+                    fontSize: 18,
+                    color: Theme.textPrimary,
+                  }}
+                >
+                  Select Discount Type
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowDiscountTypeModal(false)}
+                style={{ padding: 4 }}
+              >
+                <Ionicons name="close" size={20} color={Theme.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Options */}
+            <View style={{ gap: 12 }}>
+              {/* Option 1: Order Discount */}
+              <TouchableOpacity
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  padding: 16,
+                  backgroundColor: Theme.bgMuted || "#F8FAFC",
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: Theme.border,
+                  gap: 12,
+                }}
+                activeOpacity={0.7}
+                onPress={() => {
+                  setShowDiscountTypeModal(false);
+                  setShowDiscount(true);
+                }}
+              >
+                <View
+                  style={{
+                    backgroundColor: "#EFF6FF",
+                    padding: 10,
+                    borderRadius: 10,
+                  }}
+                >
+                  <Ionicons name="receipt-outline" size={22} color="#3B82F6" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{
+                      fontFamily: Fonts.bold,
+                      fontSize: 15,
+                      color: Theme.textPrimary,
+                    }}
+                  >
+                    Order Discount
+                  </Text>
+                  <Text
+                    style={{
+                      fontFamily: Fonts.regular,
+                      fontSize: 12,
+                      color: Theme.textSecondary,
+                      marginTop: 2,
+                    }}
+                  >
+                    Apply discount to the entire bill
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Theme.textMuted} />
+              </TouchableOpacity>
+
+              {/* Option 2: Item Discount */}
+              <TouchableOpacity
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  padding: 16,
+                  backgroundColor: Theme.bgMuted || "#F8FAFC",
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: Theme.border,
+                  gap: 12,
+                }}
+                activeOpacity={0.7}
+                onPress={() => {
+                  setShowDiscountTypeModal(false);
+                  setShowItemDiscount(true);
+                }}
+              >
+                <View
+                  style={{
+                    backgroundColor: "#FDF2F8",
+                    padding: 10,
+                    borderRadius: 10,
+                  }}
+                >
+                  <Ionicons name="pricetag-outline" size={22} color="#EC4899" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{
+                      fontFamily: Fonts.bold,
+                      fontSize: 15,
+                      color: Theme.textPrimary,
+                    }}
+                  >
+                    Item Discount
+                  </Text>
+                  <Text
+                    style={{
+                      fontFamily: Fonts.regular,
+                      fontSize: 12,
+                      color: Theme.textSecondary,
+                      marginTop: 2,
+                    }}
+                  >
+                    Apply discount to specific menu items
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Theme.textMuted} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       <DiscountModal
         visible={showDiscount}
         onClose={() => setShowDiscount(false)}
         currentTotal={subtotal}
+      />
+
+      <ItemDiscountModal
+        visible={showItemDiscount}
+        onClose={() => setShowItemDiscount(false)}
       />
 
       <CancelOrderModal
@@ -2008,6 +2695,126 @@ export default function SummaryScreen() {
         loadingReasons={loadingReasons}
         isCancelling={isCancellingOrder}
       />
+
+      {/* PROMO CODE MODAL */}
+      <Modal
+        visible={showPromoModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPromoModal(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowPromoModal(false)}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={[styles.modalContent, { maxWidth: 420, maxHeight: "85%" }]}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Promo Codes</Text>
+                  <TouchableOpacity onPress={() => setShowPromoModal(false)}>
+                    <Ionicons name="close" size={24} color={Theme.textPrimary} />
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.modalDesc}>
+                  Select a saved promo code or search/type to apply.
+                </Text>
+
+                <View style={[styles.searchWrap, { width: "100%", marginTop: 5, marginBottom: 15 }]}>
+                  <Ionicons name="search-outline" size={20} color={Theme.textMuted} />
+                  <TextInput
+                    style={styles.searchInput}
+                    placeholder="Search promo or type code manually..."
+                    placeholderTextColor={Theme.textMuted}
+                    value={promoCodeInput}
+                    onChangeText={setPromoCodeInput}
+                    autoCapitalize="characters"
+                    autoFocus
+                  />
+                  {promoCodeInput.length > 0 && (
+                    <TouchableOpacity onPress={() => setPromoCodeInput("")}>
+                      <Ionicons name="close-circle" size={20} color={Theme.textMuted} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {loadingPromos ? (
+                  <ActivityIndicator size="small" color={Theme.primary} style={{ marginVertical: 20 }} />
+                ) : (
+                  <ScrollView style={{ maxHeight: 220, marginBottom: 20 }} showsVerticalScrollIndicator={true}>
+                    {filteredPromos.length === 0 ? (
+                      <Text style={{ textAlign: "center", color: Theme.textMuted, marginVertical: 15, fontFamily: Fonts.regular }}>
+                        No active promo codes found
+                      </Text>
+                    ) : (
+                      filteredPromos.map((item) => (
+                        <TouchableOpacity
+                          key={item.MemberId}
+                          style={{
+                            flexDirection: "row",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            padding: 12,
+                            borderRadius: 12,
+                            backgroundColor: Theme.bgMuted,
+                            marginBottom: 8,
+                            borderWidth: 1,
+                            borderColor: Theme.border,
+                          }}
+                          onPress={() => handlePromoCode(item.Promocode)}
+                        >
+                          <View style={{ flex: 1, marginRight: 10 }}>
+                            <Text style={{ fontFamily: Fonts.bold, fontSize: 15, color: Theme.textPrimary }}>
+                              {item.Promocode}
+                            </Text>
+                            <Text style={{ fontFamily: Fonts.medium, fontSize: 12, color: Theme.textSecondary, marginTop: 2 }}>
+                              {item.Name} ({item.Phone})
+                            </Text>
+                          </View>
+                          <Text style={{ fontFamily: Fonts.black, fontSize: 16, color: Theme.primary }}>
+                            {currencySymbol}{Number(item.Promoamount || 0).toFixed(2)}
+                          </Text>
+                        </TouchableOpacity>
+                      ))
+                    )}
+                  </ScrollView>
+                )}
+
+                <View style={{ flexDirection: "row", gap: 12, width: "100%" }}>
+                  <TouchableOpacity
+                    style={[
+                      styles.mergeConfirmBtn,
+                      styles.mergeConfirmBtnCancel,
+                      { paddingVertical: 12 },
+                    ]}
+                    onPress={() => {
+                      setShowPromoModal(false);
+                      setPromoCodeInput("");
+                    }}
+                  >
+                    <Text style={styles.mergeConfirmBtnCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.mergeConfirmBtn,
+                      styles.mergeConfirmBtnPrimary,
+                      { paddingVertical: 12 },
+                      (!promoCodeInput.trim() || isApplyingPromo) && { opacity: 0.6 },
+                    ]}
+                    onPress={() => handlePromoCode(promoCodeInput)}
+                    disabled={!promoCodeInput.trim() || isApplyingPromo}
+                  >
+                    {isApplyingPromo ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.mergeConfirmBtnPrimaryText}>Apply</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
 
       <VoidItemModal
         visible={showVoidModal}
@@ -2084,12 +2891,149 @@ export default function SummaryScreen() {
         }}
       />
 
+      {/* 🏆 REWARD POINTS MEMBER LOOKUP MODAL */}
+      <Modal
+        visible={showRewardModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowRewardModal(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowRewardModal(false)}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={[styles.modalContent, { maxWidth: 450, maxHeight: "85%" }]}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Reward Member Lookup</Text>
+                  <TouchableOpacity onPress={() => setShowRewardModal(false)}>
+                    <Ionicons name="close" size={24} color={Theme.textPrimary} />
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.modalDesc}>
+                  Link a member number or name to award reward wallet points.
+                </Text>
+
+                <View style={[styles.searchWrap, { width: "100%", marginTop: 5, marginBottom: 15 }]}>
+                  <Ionicons name="search-outline" size={20} color={Theme.textMuted} />
+                  <TextInput
+                    style={styles.searchInput}
+                    placeholder="Enter phone or customer name..."
+                    placeholderTextColor={Theme.textMuted}
+                    value={rewardSearchText}
+                    onChangeText={handleRewardSearch}
+                  />
+                  {rewardSearchText.length > 0 && (
+                    <TouchableOpacity onPress={() => {
+                      setRewardSearchText("");
+                      setRewardSearchResults([]);
+                    }}>
+                      <Ionicons name="close-circle" size={20} color={Theme.textMuted} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {isSearchingRewards ? (
+                  <ActivityIndicator size="small" color={Theme.primary} style={{ marginVertical: 20 }} />
+                ) : (
+                  <ScrollView style={{ maxHeight: 220, marginBottom: 20 }} showsVerticalScrollIndicator={true}>
+                    {rewardSearchResults.length === 0 ? (
+                      <Text style={{ textAlign: "center", color: Theme.textMuted, marginVertical: 15, fontFamily: Fonts.regular }}>
+                        {rewardSearchText ? "No matching members found" : "Type to search members"}
+                      </Text>
+                    ) : (
+                      rewardSearchResults.map((item) => (
+                        <TouchableOpacity
+                          key={item.MemberId}
+                          style={{
+                            flexDirection: "row",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            padding: 12,
+                            borderRadius: 12,
+                            backgroundColor: Theme.bgMuted,
+                            marginBottom: 8,
+                            borderWidth: 1,
+                            borderColor: Theme.border,
+                          }}
+                          onPress={() => {
+                            setRewardMember(item);
+                            setShowRewardModal(false);
+                            setRewardSearchText("");
+                            setRewardSearchResults([]);
+                          }}
+                        >
+                          <View style={{ flex: 1, marginRight: 10 }}>
+                            <Text style={{ fontFamily: Fonts.bold, fontSize: 15, color: Theme.textPrimary }}>
+                              {item.Name}
+                            </Text>
+                            <Text style={{ fontFamily: Fonts.medium, fontSize: 12, color: Theme.textSecondary, marginTop: 2 }}>
+                              Phone: {item.Phone}
+                            </Text>
+                          </View>
+                          <View style={{ alignItems: "flex-end" }}>
+                            <Text style={{ fontFamily: Fonts.black, fontSize: 14, color: "#D97706" }}>
+                              {currencySymbol}{(parseFloat(item.RewardCredit) || 0).toFixed(2)} Rewards
+                            </Text>
+                            <Text style={{ fontFamily: Fonts.medium, fontSize: 11, color: Theme.textSecondary, marginTop: 2 }}>
+                              Credit: {currencySymbol}{(parseFloat(item.AvailableCredit) || 0).toFixed(2)}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      ))
+                    )}
+                  </ScrollView>
+                )}
+
+                {rewardMember && (
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: Theme.dangerBg,
+                      padding: 12,
+                      borderRadius: 12,
+                      alignItems: "center",
+                      marginBottom: 15,
+                      borderWidth: 1,
+                      borderColor: Theme.dangerBorder
+                    }}
+                    onPress={() => {
+                      setRewardMember(null);
+                      setShowRewardModal(false);
+                    }}
+                  >
+                    <Text style={{ fontFamily: Fonts.bold, color: Theme.danger, fontSize: 14 }}>
+                      Unlink Current Member ({rewardMember.Name})
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                <View style={{ flexDirection: "row", gap: 12, width: "100%" }}>
+                  <TouchableOpacity
+                    style={[
+                      styles.mergeConfirmBtn,
+                      styles.mergeConfirmBtnCancel,
+                      { paddingVertical: 12, flex: 1 },
+                    ]}
+                    onPress={() => {
+                      setShowRewardModal(false);
+                      setRewardSearchText("");
+                      setRewardSearchResults([]);
+                    }}
+                  >
+                    <Text style={styles.mergeConfirmBtnCancelText}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+
       {/* BILL OPTIONS MODAL */}
       <Modal transparent visible={showBillOptions} animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowBillOptions(false)}>
           <View style={styles.modalOverlay}>
             <TouchableWithoutFeedback>
-              <View style={[styles.modalContent, { maxWidth: 350 }]}>
+              <View style={[styles.modalContent, { maxWidth: 350, maxHeight: "85%" }]}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>Bill Options</Text>
                   <TouchableOpacity onPress={() => setShowBillOptions(false)}>
@@ -2105,115 +3049,172 @@ export default function SummaryScreen() {
                   Select an action for this bill
                 </Text>
 
-                <TouchableOpacity
-                  style={styles.billOptionItem}
-                  onPress={handleSplitBill}
-                >
-                  <View
-                    style={[
-                      styles.billOptionIcon,
-                      { backgroundColor: Theme.infoBg },
-                    ]}
+                <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
+                  <TouchableOpacity
+                    style={styles.billOptionItem}
+                    onPress={handleSplitBill}
                   >
-                    <Ionicons
-                      name="git-branch-outline"
-                      size={20}
-                      color={Theme.info}
-                    />
-                  </View>
-                  <Text style={styles.billOptionText}>Split Bill</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.billOptionItem}
-                  onPress={handleMergeBill}
-                >
-                  <View
-                    style={[
-                      styles.billOptionIcon,
-                      { backgroundColor: Theme.warningBg },
-                    ]}
-                  >
-                    <Ionicons
-                      name="layers-outline"
-                      size={20}
-                      color={Theme.warning}
-                    />
-                  </View>
-                  <Text style={styles.billOptionText}>Merge Bill</Text>
-                </TouchableOpacity>
-
-
-                <TouchableOpacity
-                  style={styles.billOptionItem}
-                  onPress={handlePrintCheckoutBill}
-                >
-                  <View
-                    style={[
-                      styles.billOptionIcon,
-                      { backgroundColor: Theme.successBg },
-                    ]}
-                  >
-                    <Ionicons
-                      name="receipt-outline"
-                      size={20}
-                      color={Theme.success}
-                    />
-                  </View>
-                  <Text style={styles.billOptionText}>Print Bill</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.billOptionItem}
-                  onPress={handleReprintKOT}
-                >
-                  <View
-                    style={[
-                      styles.billOptionIcon,
-                      { backgroundColor: Theme.primaryLight },
-                    ]}
-                  >
-                    <Ionicons
-                      name="print-outline"
-                      size={20}
-                      color={Theme.primary}
-                    />
-                  </View>
-                  <Text style={styles.billOptionText}>Reprint KOT</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.billOptionItem}
-                  onPress={handleReduceServiceCharge}
-                  disabled={isReducingSC}
-                >
-                  <View
-                    style={[
-                      styles.billOptionIcon,
-                      { backgroundColor: scReduced ? "#f0fdf4" : "#fef9c3" },
-                    ]}
-                  >
-                    {isReducingSC ? (
-                      <ActivityIndicator size={18} color="#ca8a04" />
-                    ) : (
-                      <MaterialCommunityIcons
-                        name="percent-outline"
+                    <View
+                      style={[
+                        styles.billOptionIcon,
+                        { backgroundColor: Theme.infoBg },
+                      ]}
+                    >
+                      <Ionicons
+                        name="git-branch-outline"
                         size={20}
-                        color={scReduced ? "#16a34a" : "#ca8a04"}
+                        color={Theme.info}
                       />
-                    )}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.billOptionText}>
-                      {scReduced ? "Restore Service Charge" : "Remove Service Charge"}
-                    </Text>
-                    {scReduced && (
-                      <Text style={{ fontSize: 11, color: "#16a34a", marginTop: 2, fontFamily: Fonts.medium }}>
-                        Service charge set to 0.00 (Tap to restore)
+                    </View>
+                    <Text style={styles.billOptionText}>Split Bill</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.billOptionItem}
+                    onPress={handleMergeBill}
+                  >
+                    <View
+                      style={[
+                        styles.billOptionIcon,
+                        { backgroundColor: Theme.warningBg },
+                      ]}
+                    >
+                      <Ionicons
+                        name="layers-outline"
+                        size={20}
+                        color={Theme.warning}
+                      />
+                    </View>
+                    <Text style={styles.billOptionText}>Merge Bill</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.billOptionItem}
+                    onPress={() => {
+                      setShowBillOptions(false);
+                      handleFOC();
+                    }}
+                  >
+                    <View
+                      style={[
+                        styles.billOptionIcon,
+                        { backgroundColor: Theme.warningBg },
+                      ]}
+                    >
+                      <Ionicons
+                        name="gift-outline"
+                        size={20}
+                        color={Theme.warning}
+                      />
+                    </View>
+                    <Text style={styles.billOptionText}>FOC</Text>
+                  </TouchableOpacity>
+
+
+                  <TouchableOpacity
+                    style={styles.billOptionItem}
+                    onPress={handlePrintCheckoutBill}
+                  >
+                    <View
+                      style={[
+                        styles.billOptionIcon,
+                        { backgroundColor: Theme.successBg },
+                      ]}
+                    >
+                      <Ionicons
+                        name="receipt-outline"
+                        size={20}
+                        color={Theme.success}
+                      />
+                    </View>
+                    <Text style={styles.billOptionText}>Print Bill</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.billOptionItem}
+                    onPress={handleReprintKOT}
+                  >
+                    <View
+                      style={[
+                        styles.billOptionIcon,
+                        { backgroundColor: Theme.primaryLight },
+                      ]}
+                    >
+                      <Ionicons
+                        name="print-outline"
+                        size={20}
+                        color={Theme.primary}
+                      />
+                    </View>
+                    <Text style={styles.billOptionText}>Reprint KOT</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.billOptionItem}
+                    onPress={handleReduceServiceCharge}
+                    disabled={isReducingSC}
+                  >
+                    <View
+                      style={[
+                        styles.billOptionIcon,
+                        { backgroundColor: scReduced ? "#f0fdf4" : "#fef9c3" },
+                      ]}
+                    >
+                      {isReducingSC ? (
+                        <ActivityIndicator size={18} color="#ca8a04" />
+                      ) : (
+                        <MaterialCommunityIcons
+                          name="percent-outline"
+                          size={20}
+                          color={scReduced ? "#16a34a" : "#ca8a04"}
+                        />
+                      )}
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.billOptionText}>
+                        {scReduced ? "Restore Service Charge" : "Remove Service Charge"}
                       </Text>
-                    )}
-                  </View>
-                </TouchableOpacity>
+                      {scReduced && (
+                        <Text style={{ fontSize: 11, color: "#16a34a", marginTop: 2, fontFamily: Fonts.medium }}>
+                          Service charge set to 0.00 (Tap to restore)
+                        </Text>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.billOptionItem}
+                    onPress={handleToggleTakeawayCharge}
+                    disabled={isApplyingTakeaway}
+                  >
+                    <View
+                      style={[
+                        styles.billOptionIcon,
+                        { backgroundColor: takeawayChargeApplied ? "#f0fdf4" : "#fef9c3" },
+                      ]}
+                    >
+                      {isApplyingTakeaway ? (
+                        <ActivityIndicator size={18} color="#ca8a04" />
+                      ) : (
+                        <Ionicons
+                          name="bicycle-outline"
+                          size={20}
+                          color={takeawayChargeApplied ? "#16a34a" : "#ca8a04"}
+                        />
+                      )}
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.billOptionText}>
+                        {takeawayChargeApplied ? "Remove Takeaway Charge" : "Add Takeaway Charge"}
+                      </Text>
+                      {takeawayChargeApplied && (
+                        <Text style={{ fontSize: 11, color: "#16a34a", marginTop: 2, fontFamily: Fonts.medium }}>
+                          Takeaway charge set to {currencySymbol}{takeawayChargeAmt.toFixed(2)}
+                        </Text>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                </ScrollView>
               </View>
             </TouchableWithoutFeedback>
           </View>
@@ -2549,20 +3550,20 @@ export default function SummaryScreen() {
                   {currencySymbol}
                   {splitType === "items"
                     ? (
-                        Object.entries(splitQuantities).reduce(
-                          (sum, [lineItemId, qty]: [string, any]) => {
-                            const item = cart.find(
-                              (i: any) => i.lineItemId === lineItemId,
-                            );
-                            return sum + (item?.price || 0) * qty;
-                          },
-                          0,
-                        ) +
-                        extraSplitItems.reduce(
-                          (sum, item) => sum + (item.price || 0) * item.qty,
-                          0,
-                        )
-                      ).toFixed(2)
+                      Object.entries(splitQuantities).reduce(
+                        (sum, [lineItemId, qty]: [string, any]) => {
+                          const item = cart.find(
+                            (i: any) => i.lineItemId === lineItemId,
+                          );
+                          return sum + (item?.price || 0) * qty;
+                        },
+                        0,
+                      ) +
+                      extraSplitItems.reduce(
+                        (sum, item) => sum + (item.price || 0) * item.qty,
+                        0,
+                      )
+                    ).toFixed(2)
                     : (grandTotal / partCount).toFixed(2)}
                 </Text>
               </View>
@@ -2571,8 +3572,8 @@ export default function SummaryScreen() {
                 style={[
                   styles.proceedBtn,
                   splitType === "items" &&
-                    Object.values(splitQuantities).every((q) => q === 0) &&
-                    extraSplitItems.length === 0 && { opacity: 0.5 },
+                  Object.values(splitQuantities).every((q) => q === 0) &&
+                  extraSplitItems.length === 0 && { opacity: 0.5 },
                 ]}
                 disabled={
                   splitType === "items" &&
@@ -2600,18 +3601,18 @@ export default function SummaryScreen() {
                   }
                   const selectedItems = splitType === "items"
                     ? [
-                        ...cart
-                          .map((item: any) => ({
-                            ...item,
-                            qty: splitQuantities[item.lineItemId] || 0,
-                          }))
-                          .filter((i: any) => i.qty > 0),
-                        ...extraSplitItems,
-                      ]
+                      ...cart
+                        .map((item: any) => ({
+                          ...item,
+                          qty: splitQuantities[item.lineItemId] || 0,
+                        }))
+                        .filter((i: any) => i.qty > 0),
+                      ...extraSplitItems,
+                    ]
                     : cart.map((item: any) => ({
-                        ...item,
-                        qty: item.qty / partCount,
-                      }));
+                      ...item,
+                      qty: item.qty / partCount,
+                    }));
 
                   useCartStore.getState().setActiveSplitItems(selectedItems);
                   setShowSplitModal(false);
@@ -2652,10 +3653,10 @@ export default function SummaryScreen() {
             <FlatList
               style={{ flexShrink: 1, marginBottom: 15 }}
               data={activeOrders.filter(
-                (o: any) => 
-                  o.context?.orderType === "DINE_IN" && 
-                  o.context?.tableId && 
-                  String(o.context.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase() !== 
+                (o: any) =>
+                  o.context?.orderType === "DINE_IN" &&
+                  o.context?.tableId &&
+                  String(o.context.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase() !==
                   String(context?.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase()
               )}
               keyExtractor={(item) => item.orderId}
