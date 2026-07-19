@@ -22,6 +22,7 @@ import { CustomerDisplaySync } from "../../utils/CustomerDisplaySync";
 import { useCartStore } from "../../stores/cartStore";
 import { useOrderContextStore } from "../../stores/orderContextStore";
 import { usePaymentSettingsStore } from "../../stores/paymentSettingsStore";
+import { useCompanySettingsStore } from "../../stores/companySettingsStore";
 const formatMoney = (symbol: string, amount: number) => {
   try {
     return `${symbol}${(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -137,7 +138,7 @@ const [isGeneratingQR, setIsGeneratingQR] = useState(false);
       const context = useOrderContextStore.getState().currentOrder;
       const currentContextId = useCartStore.getState().currentContextId;
       const cart = (currentContextId ? useCartStore.getState().carts[currentContextId] : []) || [];
-      const gstPercentage = usePaymentSettingsStore.getState().settings.gstPercentage || 0;
+      const gstPercentage = useCompanySettingsStore.getState().settings.gstPercentage || 0;
 
       CustomerDisplaySync.syncCart({
         orderContext: {
