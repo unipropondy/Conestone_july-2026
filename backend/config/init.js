@@ -108,6 +108,11 @@ async function initDB(pool) {
       END
     `);
 
+    // 🏆 REWARD POINTS: Upgrade RewardMaster if it exists but lacks newer columns
+    await runQuery("RewardMaster - Description", "IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RewardMaster]') AND type in (N'U')) AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RewardMaster]') AND name = 'Description') ALTER TABLE [dbo].[RewardMaster] ADD Description NVARCHAR(255) NULL");
+    await runQuery("RewardMaster - CreatedOn", "IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RewardMaster]') AND type in (N'U')) AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RewardMaster]') AND name = 'CreatedOn') ALTER TABLE [dbo].[RewardMaster] ADD CreatedOn DATETIME DEFAULT GETDATE()");
+    await runQuery("RewardMaster - ModifiedOn", "IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RewardMaster]') AND type in (N'U')) AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RewardMaster]') AND name = 'ModifiedOn') ALTER TABLE [dbo].[RewardMaster] ADD ModifiedOn DATETIME NULL");
+
     // 🏆 REWARD POINTS: RewardMaster — configures earn ratio
     await runQuery("Create RewardMaster", `
       IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RewardMaster]') AND type in (N'U'))
